@@ -18,4 +18,5 @@ __all__ = [
     "budget",
     "verify_alignment",
     "eval_boundary",
+    "vote",
 ]

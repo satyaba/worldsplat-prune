@@ -657,5 +657,8 @@ composition, encoding and evaluation paths; the full suite passes. The `Done\*`
 model paths are written defensively but not exercised against model weights.
 
 **Not covered by §9** (next work): the post-reconstruction pruning operator itself
-(§4–5) — including the `vote_classes_over_views` pass (§3) — which unblocks the
-pruning-ablation manifest and the report.
+(§4–5), which unblocks the pruning-ablation manifest and the report. The label
+lifting that feeds it — the `vote_classes_over_views` pass (§3) — is now
+implemented in `worldsplat_prune/vote.py` (`VoteBundle`, `vote_classes_over_views`),
+CPU-tested in `tests/test_vote.py`; the CUDA `render` membership path is wired but
+exercised only against a GPU rasteriser.
