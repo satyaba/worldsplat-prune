@@ -245,7 +245,8 @@ def points_at_pixels(label_map: np.ndarray, cam: Camera, xyz: np.ndarray) -> np.
 
 
 def point_labels_from_views(scene: "ColmapScene", labels_dir: str | Path,
-                            mode: str = "first", min_votes: int = 1) -> np.ndarray:
+                            mode: str = "first", min_votes: int = 1,
+                            transform=None) -> np.ndarray:
     """Lift per-view id maps onto the COLMAP points.
 
     ``mode="first"``   : first labelled view wins (the raw/unfused behaviour).
@@ -253,18 +254,29 @@ def point_labels_from_views(scene: "ColmapScene", labels_dir: str | Path,
                          ``min_votes``); this is how a 3D GT/instance labelling is
                          built from per-view maps.
 
-    Labels are assumed ``< 65536`` (uint16 id maps).
+    Per-view maps may be PNG id maps or int32 ``.npy`` maps (e.g. composite
+    ``(class, instance)`` maps, which exceed the 16-bit PNG range). An optional
+    ``transform`` is applied to each loaded map before lifting — e.g.
+    ``transform=decode_class`` to lift the class half of a composite map.
     """
     labels_dir = Path(labels_dir)
     P = scene.xyz.shape[0]
+
+    def _lift(cam):
+        lab = read_view_map(labels_dir, cam.stem)
+        if lab is None:
+            return None
+        if transform is not None:
+            lab = transform(lab)
+        return points_at_pixels(lab, cam, scene.xyz)
+
     if mode == "first":
         out = np.zeros(P, dtype=np.int32)
         assigned = np.zeros(P, dtype=bool)
         for cam in scene.cameras:
-            lp = labels_dir / f"{cam.stem}.png"
-            if not lp.exists():
+            lab = _lift(cam)
+            if lab is None:
                 continue
-            lab = points_at_pixels(read_id_map(lp), cam, scene.xyz)
             new = (lab > 0) & (~assigned)
             out[new] = lab[new]
             assigned |= new
@@ -274,10 +286,9 @@ def point_labels_from_views(scene: "ColmapScene", labels_dir: str | Path,
     LARGE = 1 << 16
     pts_list, lab_list = [], []
     for cam in scene.cameras:
-        lp = labels_dir / f"{cam.stem}.png"
-        if not lp.exists():
+        lab = _lift(cam)
+        if lab is None:
             continue
-        lab = points_at_pixels(read_id_map(lp), cam, scene.xyz)
         idx = np.nonzero(lab > 0)[0]
         if idx.size:
             pts_list.append(idx.astype(np.int64))
@@ -319,6 +330,22 @@ def write_id_map(path: str | Path, ids: np.ndarray) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(np.asarray(ids).astype(np.uint16)).save(path)
+
+
+def read_view_map(labels_dir: str | Path, stem: str) -> np.ndarray | None:
+    """Read one per-view label map: ``<stem>.npy`` (int32) or ``<stem>.png``.
+
+    Returns ``None`` when neither exists. The ``.npy`` form carries composite
+    ``(class, instance)`` maps whose ids exceed the 16-bit PNG range.
+    """
+    labels_dir = Path(labels_dir)
+    npy = labels_dir / f"{stem}.npy"
+    if npy.exists():
+        return np.load(npy).astype(np.int32)
+    png = labels_dir / f"{stem}.png"
+    if png.exists():
+        return read_id_map(png)
+    return None
 
 
 def assign_within_radius(label_map: np.ndarray, radius: int) -> np.ndarray:

@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..datasets.composite import COMPOSITE_STRIDE, decode
 from . import scene_io as sio
 
 
@@ -167,11 +168,30 @@ def evaluate_instance_labels(pred: np.ndarray, gt: np.ndarray,
 # --------------------------------------------------------------------------- #
 # driver                                                                        #
 # --------------------------------------------------------------------------- #
-def _load_labels(scene: sio.ColmapScene, spec: str, base: Optional[Path] = None) -> np.ndarray:
+def _level_transform(level: str, stride: int = COMPOSITE_STRIDE):
+    """Map a composite map to the half to score, or ``None`` to keep it whole.
+
+    ``level`` selects which slice of a front-end composite ``(class, instance)``
+    map to compare: ``"class"`` validates predicted **classes** (against Replica
+    GT classes), ``"instance"`` scores the per-class instance half, and
+    ``"composite"`` (default) keeps the full id.
+    """
+    if level == "composite":
+        return None
+    if level == "class":
+        return lambda ids: decode(ids, stride=stride)[0]
+    if level == "instance":
+        return lambda ids: decode(ids, stride=stride)[1]
+    raise ValueError(f"unknown level {level!r} (composite|class|instance)")
+
+
+def _load_labels(scene: sio.ColmapScene, spec: str, base: Optional[Path] = None,
+                 level: str = "composite", stride: int = COMPOSITE_STRIDE) -> np.ndarray:
     """``spec`` is ``/path/to/point_labels.npy`` or ``<dir>[:first|:majority]``.
 
     Relative paths resolve against ``base`` (the dataset dir). The mode suffix is
     recognised by *suffix* (not the first colon) so Windows drive letters work.
+    ``level`` decodes composite maps to their class/instance half when requested.
     """
     mode = "majority"
     explicit = False
@@ -186,17 +206,21 @@ def _load_labels(scene: sio.ColmapScene, spec: str, base: Optional[Path] = None)
     p = Path(path)
     if not p.is_absolute() and base is not None:
         p = base / p
+    transform = _level_transform(level, stride)
     if p.suffix == ".npy":
-        return np.load(p).astype(np.int32)
+        arr = np.load(p).astype(np.int32)
+        return transform(arr) if transform is not None else arr
     npy = p / "point_labels.npy"
     if npy.exists() and not explicit:
-        return np.load(npy).astype(np.int32)
-    return sio.point_labels_from_views(scene, p, mode=mode)
+        arr = np.load(npy).astype(np.int32)
+        return transform(arr) if transform is not None else arr
+    return sio.point_labels_from_views(scene, p, mode=mode, transform=transform)
 
 
 def run_eval(dataset_dir: str | Path, *, gt: str, methods: Dict[str, str],
              sparse_subdir: str = "sparse/0", thresholds: Sequence[float] = (0.25, 0.5),
-             min_area: int = 0, gt_npy: Optional[str] = None) -> dict:
+             min_area: int = 0, gt_npy: Optional[str] = None,
+             level: str = "composite", stride: int = COMPOSITE_STRIDE) -> dict:
     dataset_dir = Path(dataset_dir)
     scene = sio.load_colmap_scene(dataset_dir / sparse_subdir)
 
@@ -219,7 +243,7 @@ def run_eval(dataset_dir: str | Path, *, gt: str, methods: Dict[str, str],
     report = {"points": int(scene.xyz.shape[0]), "gt_instances":
               int(len(np.unique(gt_labels[gt_labels > 0]))), "methods": {}}
     for name, spec in methods.items():
-        pred = _load_labels(scene, spec, base=dataset_dir)
+        pred = _load_labels(scene, spec, base=dataset_dir, level=level, stride=stride)
         res = evaluate_instance_labels(pred, gt_labels, thresholds=thresholds,
                                        min_area=min_area)
         print(f"{name:<16} {res['n_pred']:>7} {res['ap'].get('AP25', 0):>6.3f} "
@@ -227,6 +251,69 @@ def run_eval(dataset_dir: str | Path, *, gt: str, methods: Dict[str, str],
               f"{res['miou_matched']:>6.3f} {res['coverage']:>7.3f}")
         report["methods"][name] = res
     print("\n* mIoU over matched pairs at AP50. Predictions ranked by mask size.")
+    return report
+
+
+def evaluate_class_labels(pred: np.ndarray, gt: np.ndarray) -> dict:
+    """Class-level validation of a **class** prediction against class GT.
+
+    §2.2 requires scoring predicted classes against Replica GT classes before
+    trusting any pruning result. This is point accuracy over points labelled by
+    both sides, plus per-class IoU (tp/fp/fn), not the size-ranked instance AP.
+    """
+    pred = np.asarray(pred)
+    gt = np.asarray(gt)
+    valid = (pred > 0) & (gt > 0)
+    n = int(valid.sum())
+    if n == 0:
+        return {"points": 0, "accuracy": 0.0, "classes": {}}
+    p, g = pred[valid], gt[valid]
+    accuracy = float((p == g).mean())
+    classes = {}
+    for c in np.unique(np.concatenate([p, g])).tolist():
+        tp = int(((p == c) & (g == c)).sum())
+        fp = int(((p == c) & (g != c)).sum())
+        fn = int(((p != c) & (g == c)).sum())
+        classes[int(c)] = {"tp": tp, "fp": fp, "fn": fn,
+                           "iou": tp / (tp + fp + fn) if (tp + fp + fn) else 0.0}
+    return {"points": n, "accuracy": accuracy, "classes": classes}
+
+
+def run_class_eval(dataset_dir: str | Path, *, class_gt: str, methods: Dict[str, str],
+                   sparse_subdir: str = "sparse/0", level: str = "class",
+                   stride: int = COMPOSITE_STRIDE,
+                   gt_npy: Optional[str] = None) -> dict:
+    """Validate predicted **classes** (from composite maps) against class GT.
+
+    ``class_gt`` is a dir of per-view GT class maps (e.g. ``semantic_class``) or a
+    point-labels ``.npy``; classes are lifted by majority vote. Each method's
+    composite map is decoded to its class half (``level="class"``) before scoring.
+    """
+    dataset_dir = Path(dataset_dir)
+    scene = sio.load_colmap_scene(dataset_dir / sparse_subdir)
+
+    if gt_npy:
+        gt_labels = np.load(gt_npy).astype(np.int32)
+    else:
+        gt_p = Path(class_gt)
+        gt_p = gt_p if gt_p.is_absolute() else dataset_dir / gt_p
+        gt_labels = sio.point_labels_from_views(scene, gt_p, mode="majority")
+    if (gt_labels > 0).sum() == 0:
+        raise SystemExit("class GT has no labeled points (check --class_gt path)")
+    n_gt = int(len(np.unique(gt_labels[gt_labels > 0])))
+    print(f"[eval] {scene.xyz.shape[0]} points | class GT: {n_gt} classes, "
+          f"{(gt_labels > 0).sum()} labeled points", flush=True)
+
+    header = f"{'method':<16} {'points':>8} {'acc':>7} {'n_cls':>6}"
+    print("\n" + header)
+    print("-" * len(header))
+    report = {"points": int(scene.xyz.shape[0]), "classes": n_gt, "methods": {}}
+    for name, spec in methods.items():
+        pred = _load_labels(scene, spec, base=dataset_dir, level=level, stride=stride)
+        res = evaluate_class_labels(pred, gt_labels)
+        print(f"{name:<16} {res['points']:>8} {res['accuracy']:>7.3f} "
+              f"{len(res['classes']):>6}")
+        report["methods"][name] = res
     return report
 
 
@@ -253,14 +340,25 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--sparse_subdir", default="sparse/0")
     ap.add_argument("--iou", nargs="+", type=float, default=[0.25, 0.5])
     ap.add_argument("--min_area", type=int, default=0)
+    ap.add_argument("--level", default="composite",
+                    choices=["composite", "class", "instance"],
+                    help="slice of a front-end composite map to score")
+    ap.add_argument("--class_gt", default=None,
+                    help="validate predicted classes against this GT class dir "
+                         "(e.g. semantic_class) instead of instance AP")
     ap.add_argument("--json_out", default="")
     args = ap.parse_args(argv)
     methods = _parse_methods(args.method)
     if not methods:
         raise SystemExit("pass at least one --method NAME=PATH")
-    rep = run_eval(args.dataset_dir, gt=args.gt, methods=methods,
-                   sparse_subdir=args.sparse_subdir, thresholds=tuple(args.iou),
-                   min_area=args.min_area, gt_npy=args.gt_npy)
+    if args.class_gt:
+        rep = run_class_eval(args.dataset_dir, class_gt=args.class_gt,
+                             methods=methods, sparse_subdir=args.sparse_subdir,
+                             level=args.level, gt_npy=args.gt_npy)
+    else:
+        rep = run_eval(args.dataset_dir, gt=args.gt, methods=methods,
+                       sparse_subdir=args.sparse_subdir, thresholds=tuple(args.iou),
+                       min_area=args.min_area, gt_npy=args.gt_npy, level=args.level)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rep, indent=2))
         print(f"[eval] wrote {args.json_out}")

@@ -618,5 +618,9 @@ time.
 **Applied so far.** The SGDC design docs (`sgdc_spec.md`, `sgdc_report.md`) are
 removed and `docs/worldsplat_prune_spec.md` is canonical; `docs/datasets.md` and
 `README.md` are adapted (density-control sections removed); the package is
-`worldsplat_prune/`. The companion `docs/worldsplat_prune_report.md` is still to
-be written once the pruning results exist.
+`worldsplat_prune/`. The **ADAPT** code (box-prompted SAM2, per-class fusion,
+`eval_instances` class/level validation) and the **ADD** front-end (GroundingDINO
+wrapper, captioner→phrase tool, per-class fusion driver, composite adapter) are
+implemented under `worldsplat_prune/frontend/`, `worldsplat_prune/datasets/composite.py`
+and `worldsplat_prune/prep/`. The companion `docs/worldsplat_prune_report.md` is
+still to be written once the pruning results exist.

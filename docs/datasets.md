@@ -194,6 +194,42 @@ fused maps. Point the harness at the composite maps:
 --label_adapter composite        # alias: grounded_sam2
 ```
 
+### 3.7 Prompt-driven front-end (Grounded-SAM-2)
+
+For a scene whose labels come from the open-vocabulary front-end (§2.2) rather
+than SAM2 AMG, seed a phrase list, then detect → box-prompt SAM2 → per-class fuse
+→ compose, in one driver:
+
+```bash
+# 1. seed phrases from frame captions (optional; curate the file by hand)
+python -m worldsplat_prune.frontend.caption \
+    --dataset_dir "$DATASET_ROOT/mipnerf360/garden" --out phrases_seed.txt --n 16
+
+# 2. detect -> SAM2 box-prompt -> per-class fusion -> composite maps
+python -m worldsplat_prune.prep.build_semantic_maps \
+    --dataset_dir "$DATASET_ROOT/mipnerf360/garden" \
+    --phrases phrases.txt \
+    --sam2_ckpt "$HOME_DIR/checkpoints/sam2.1_hiera_large.pt"
+```
+
+Stages are skippable (`--skip_detect` reuses `detections.json`, `--detect_only`
+stops before SAM2), and the intermediates (`detections.json`,
+`semantic_instance_<class>/`, `semantic_instance_fused/`) are kept for
+inspection. Detector and masking have their own CLIs
+(`worldsplat_prune.frontend.grounding`, `worldsplat_prune.frontend.sam2_box`).
+**Validate the predicted classes against Replica GT before trusting any pruning
+result** (risk §9):
+
+```bash
+python -m worldsplat_prune.prep.eval_instances --dataset_dir <replica_scene> \
+    --class_gt semantic_class --level class \
+    --method frontend=semantic_composite
+```
+
+`eval_instances` also takes `--level {composite,class,instance}` to score a
+chosen slice of a composite map (instance AP on the instance half, class accuracy
+against class GT).
+
 ## 4. Label-adapter contract (why instance-only is enough)
 
 Every adapter produces the canonical per-view map `L_v : int32 [H,W]`, `0 == void`;

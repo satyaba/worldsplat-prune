@@ -13,6 +13,27 @@ package stays importable without ``sam2`` / ``transformers`` / ``torch``.
 """
 from __future__ import annotations
 
+from .caption import (
+    CallableCaptioner,
+    Captioner,
+    HFCaptioner,
+    extract_phrases,
+    merge_phrase_lists,
+    seed_phrase_list,
+)
+from .grounding import (
+    GroundingDinoDetector,
+    detect_dataset,
+    format_text_prompt,
+    match_label_to_phrase,
+    parse_phrases,
+)
 from .sam2_box import SAM2BoxLabeler, masks_to_class_maps
 
-__all__ = ["SAM2BoxLabeler", "masks_to_class_maps"]
+__all__ = [
+    "SAM2BoxLabeler", "masks_to_class_maps",
+    "GroundingDinoDetector", "detect_dataset", "format_text_prompt",
+    "match_label_to_phrase", "parse_phrases",
+    "Captioner", "CallableCaptioner", "HFCaptioner",
+    "extract_phrases", "merge_phrase_lists", "seed_phrase_list",
+]

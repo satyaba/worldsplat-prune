@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from worldsplat_prune.prep import eval_instances as ei
 from worldsplat_prune.prep import scene_io as sio
+from worldsplat_prune.datasets.composite import COMPOSITE_STRIDE
 
 
 # --------------------------------------------------------------------------- #
@@ -125,6 +126,51 @@ def test_point_labels_first_vs_majority_tie():
         scene3 = sio.load_colmap_scene(root / "sparse" / "0")
         maj3 = sio.point_labels_from_views(scene3, lab_dir, mode="majority")
         assert set(maj3.tolist()) == {5}
+
+
+# --------------------------------------------------------------------------- #
+# class validation of the front-end composite maps                              #
+# --------------------------------------------------------------------------- #
+def test_level_transform_decodes_composite():
+    S = COMPOSITE_STRIDE
+    ids = np.array([[2 * S + 3, 0]], dtype=np.int32)
+    assert ei._level_transform("composite") is None
+    assert ei._level_transform("class")(ids)[0, 0] == 2
+    assert ei._level_transform("instance")(ids)[0, 0] == 3
+
+
+def test_evaluate_class_labels_accuracy():
+    gt = np.array([1, 1, 2, 2, 0])
+    assert ei.evaluate_class_labels(gt.copy(), gt)["accuracy"] == 1.0
+    pred = np.array([1, 2, 2, 2, 1])     # point 2 mislabelled
+    res = ei.evaluate_class_labels(pred, gt)
+    assert res["points"] == 4
+    assert abs(res["accuracy"] - 0.75) < 1e-9
+    assert ei.evaluate_class_labels(np.zeros(3), np.zeros(3))["points"] == 0
+
+
+def test_run_class_eval_on_composite_dir():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _scene_2views(root)                       # points project to pixel (2,2)
+        S = COMPOSITE_STRIDE
+        cdir = root / "semantic_composite"
+        cdir.mkdir()
+        for stem in ("rgb_0", "rgb_1"):
+            m = np.zeros((4, 4), dtype=np.int32)
+            m[2, 2] = 2 * S + 3                   # class 2, instance 3
+            np.save(cdir / f"{stem}.npy", m)
+        gdir = root / "semantic_class"
+        gdir.mkdir()
+        for stem in ("rgb_0", "rgb_1"):
+            m = np.zeros((4, 4), dtype=np.int32)
+            m[2, 2] = 2
+            sio.write_id_map(gdir / f"{stem}.png", m)
+
+        res = ei.run_class_eval(root, class_gt="semantic_class",
+                                methods={"frontend": "semantic_composite"},
+                                level="class")
+        assert res["methods"]["frontend"]["accuracy"] == 1.0
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from worldsplat_prune.frontend.sam2_box import masks_to_class_maps, _slug
+from worldsplat_prune.frontend import grounding as g
+from worldsplat_prune.frontend import caption as c
 
 
 def test_masks_to_class_maps_are_independent_per_class():
@@ -69,6 +71,46 @@ def test_slug_is_filesystem_safe():
     assert _slug("traffic light") == "traffic_light"
     assert _slug("cup/glass") == "cup_glass"
     assert _slug("  ") == "class"
+
+
+# --------------------------------------------------------------------------- #
+# grounding: phrase parsing / prompt / label matching                           #
+# --------------------------------------------------------------------------- #
+def test_parse_phrases_dedup_and_comments(tmpdir=None):
+    import tempfile
+    from pathlib import Path
+
+    assert g.parse_phrases(["Chair.", "table", "chair"]) == ["chair", "table"]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "phrases.txt"
+        p.write_text("chair\n# a comment\ntable .\nchair\n")
+        assert g.parse_phrases(str(p)) == ["chair", "table"]
+
+
+def test_format_text_prompt():
+    assert g.format_text_prompt(["Chair.", " table"]) == "chair. table."
+
+
+def test_match_label_to_phrase():
+    phrases = ["traffic light", "chair"]
+    assert g.match_label_to_phrase("traffic light", phrases) == "traffic light"
+    assert g.match_label_to_phrase("Traffic Light.", phrases) == "traffic light"
+    assert g.match_label_to_phrase("chair", phrases) == "chair"
+    assert g.match_label_to_phrase("chair leg", phrases) == "chair"   # substring
+    assert g.match_label_to_phrase("bicycle", phrases) is None
+
+
+def test_extract_phrases_stopwords_and_bigrams():
+    caps = c.extract_phrases("a brown wooden chair in a room")
+    assert "chair" in caps and "room" in caps
+    assert "a" not in caps and "in" not in caps          # stop-words dropped
+    assert "wooden chair" in caps                        # adjacent bigram kept
+    assert c.extract_phrases("the the the") == []
+
+
+def test_merge_phrase_lists_order_preserving():
+    assert c.merge_phrase_lists([["chair", "table"], ["table", "lamp"]]) == \
+        ["chair", "table", "lamp"]
 
 
 if __name__ == "__main__":
