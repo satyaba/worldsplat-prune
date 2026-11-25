@@ -19,6 +19,13 @@ Mechanism (mirrors the trainer's convention, [D6]/[D8]):
 * pixel lookup — the centre is projected through ``cam.full_proj_transform``
   (the same transform the rasteriser uses) and ``L_v``/``dt`` are sampled at the
   nearest pixel, exactly as ``add_semantic_stats`` did after the render;
+* **occlusion** — a centre-projection test is depth-blind, so geometry *behind*
+  the visible surface inherits the surface's label, painting a ghost of the
+  object onto the background (spec Risk 1). When ``occlusion`` is on (default),
+  a sample only counts if the Gaussian is not behind the rendered surface:
+  its inverse depth ``1/z`` must be within ``depth_tol`` of the pixel's
+  reference inverse depth — the rasteriser's α-weighted ``1/z`` under ``render``,
+  or a per-pixel nearest-``z`` z-buffer of the centres under ``project``;
 * vote — ``first`` ([D8] default): the first non-void id a Gaussian sees is
   frozen (view order is deterministic, sorted by ``image_name``); ``majority``:
   argmax over the per-Gaussian id histogram, ties → void.
@@ -32,10 +39,10 @@ field          shape             meaning
 ``purity``     ``float [N]``     ``seg_cnt / tot`` (first) or ``hist_max / tot``
 ``void_frac``  ``float [N]``     ``void / (labeled + void)`` ∈ [0, 1]
 ``boundary_dist`` ``float [N]``  ``mean(dt) / dt_norm`` ∈ [0, 1] (0 = on edge)
-``n_views``    ``long [N]``      #views that sampled the Gaussian
+``n_views``    ``long [N]``      #views that sampled the Gaussian (occlusion-aware)
 ``seg_hist``   ``float [N, K]``  id distribution (optional, ``dense_hist``)
 ``hist_labels`` ``long [K]``     the id behind each ``seg_hist`` column
-``meta``       ``dict``          visibility, vote, view order, dt_norm, ...
+``meta``       ``dict``          visibility, vote, occlusion, view order, ...
 ============== ================= ===============================================
 
 Finalization: ``min_views`` ([D7] default 3) → below it ``seg = 0`` and
@@ -53,6 +60,7 @@ import torch
 # Hyperparameters fixed by the design doc ([D7], [D11]).
 DEFAULT_DT_NORM = 100.0      # px scaling for `d_i`: dt_norm px -> d_i = 1
 DEFAULT_MIN_VIEWS = 3        # [D7]
+DEFAULT_DEPTH_TOL = 0.02     # relative tolerance on inverse depth for occlusion
 _OFFSET = 1 << 32            # packing base for (gaussian, label) keys
 
 
@@ -79,7 +87,8 @@ class VoteBundle:
     def summary(self) -> str:
         """One-line diagnostic (the 'is this scene usable at all' readout)."""
         m = self.meta
-        return (f"vote[{m.get('visibility')}/{m.get('vote')}] "
+        occl = "occl" if m.get("occlusion") else "no-occl"
+        return (f"vote[{m.get('visibility')}/{m.get('vote')}/{occl}] "
                 f"N={self.n_gaussians} visible={m.get('n_visible')} "
                 f"labeled={m.get('n_labeled')} "
                 f"mean_purity={m.get('mean_purity'):.3f} "
@@ -107,8 +116,9 @@ def project_centers(xyz: torch.Tensor, cam: Any):
     Uses ``cam.full_proj_transform`` (4x4, world -> clip) exactly as the
     rasteriser does, then the perspective divide and the NDC -> pixel map.
     Returns ``(u, v, depth, in_bounds)``; ``u``/``v`` are float pixels,
-    ``depth`` is the clip-space ``w`` (positive in front of the camera), and
-    ``in_bounds`` is ``depth > 0`` **and** the centre inside the image.
+    ``depth`` is the clip-space ``w`` (positive in front of the camera, equal to
+    the camera-space ``z`` the rasteriser stores), and ``in_bounds`` is
+    ``depth > 0`` **and** the centre inside the image.
     """
     M = cam.full_proj_transform.to(device=xyz.device, dtype=xyz.dtype)
     ones = xyz.new_ones((xyz.shape[0], 1))
@@ -129,23 +139,39 @@ def project_centers(xyz: torch.Tensor, cam: Any):
     return u, v, w, in_bounds
 
 
-def _sample(label_map: torch.Tensor, dt_map: torch.Tensor,
-            u: torch.Tensor, v: torch.Tensor, mask: torch.Tensor):
-    """Nearest-pixel sample of ``(label, dt)`` at ``(u, v)`` where ``mask``.
-
-    Returns ``(lab, dtv)`` of shape ``[N]``; entries outside ``mask`` are 0.
-    """
-    H, W = int(label_map.shape[0]), int(label_map.shape[1])
+def _pixel_index(u, v, W, H):
+    """Clamped nearest-pixel flat index and a validity mask for ``(u, v)``."""
     ui = torch.round(u).long().clamp_(0, W - 1)
     vi = torch.round(v).long().clamp_(0, H - 1)
-    idx = vi * W + ui
-    lab = torch.zeros_like(u, dtype=torch.long)
-    dtv = torch.zeros_like(u, dtype=torch.float32)
+    return vi * W + ui
+
+
+def _gather_flat(flat: torch.Tensor, idx: torch.Tensor, mask: torch.Tensor,
+                 dtype: torch.dtype) -> torch.Tensor:
+    """``flat[idx]`` where ``mask``; 0 elsewhere. Returns ``[N]`` of ``dtype``."""
+    out = torch.zeros(idx.shape, dtype=dtype, device=idx.device)
     if mask.any():
-        sel = idx[mask]
-        lab[mask] = label_map.reshape(-1)[sel].to(torch.long)
-        dtv[mask] = dt_map.reshape(-1)[sel].to(torch.float32)
-    return lab, dtv
+        out[mask] = flat[idx[mask]].to(dtype)
+    return out
+
+
+def pixel_min_invdepth(u, v, w, mask, H: int, W: int) -> torch.Tensor:
+    """Per-pixel **maximum inverse depth** (nearest surface) from centres.
+
+    A cheap z-buffer over the projected Gaussian centres: for every pixel, the
+    largest ``1/z`` among the masked Gaussians. Used as the occlusion reference
+    under ``project`` visibility (or whenever a rendered depth map is
+    unavailable). Returns a float ``[H, W]`` map (0 where no member projects).
+    """
+    Npix = H * W
+    idx = _pixel_index(u, v, W, H)
+    minz = torch.full((Npix,), float("inf"), dtype=torch.float32, device=u.device)
+    if mask.any():
+        minz.scatter_reduce_(0, idx[mask], w[mask].to(torch.float32), reduce="amin")
+    invd = torch.where(torch.isfinite(minz),
+                       1.0 / minz.clamp_min(1e-12),
+                       torch.zeros_like(minz))
+    return invd.reshape(H, W)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,11 +186,13 @@ class _RenderPipe:
     convert_SHs_python = False
 
 
-def make_render_fn(gaussians, pipe=None, bg=None) -> Callable[[Any], torch.Tensor]:
-    """Build the ``render``-visibility membership function (returns ``radii``).
+def make_render_fn(gaussians, pipe=None, bg=None) -> Callable[[Any], tuple]:
+    """Build the ``render``-visibility provider: ``cam -> (radii, invdepth)``.
 
-    Imported lazily so this module stays importable without the CUDA
-    rasteriser installed (the ``project`` path and the pure helpers are CPU-ok).
+    ``invdepth`` is the rasteriser's α-weighted inverse-depth map (``[H, W]``),
+    used for the occlusion test. Imported lazily so this module stays importable
+    without the CUDA rasteriser (the ``project`` path and the pure helpers are
+    CPU-ok).
     """
     from gaussian_renderer import render as _render
 
@@ -173,8 +201,9 @@ def make_render_fn(gaussians, pipe=None, bg=None) -> Callable[[Any], torch.Tenso
     if bg is None:
         bg = torch.zeros(3, dtype=torch.float32, device=gaussians.get_xyz.device)
 
-    def fn(cam: Any) -> torch.Tensor:
-        return _render(cam, gaussians, pipe, bg)["radii"]
+    def fn(cam: Any):
+        pkg = _render(cam, gaussians, pipe, bg)
+        return pkg["radii"], pkg.get("depth")
 
     return fn
 
@@ -229,10 +258,12 @@ def vote_classes_over_views(gaussians, cameras, store, *,
                             vote: str = "first",
                             dt_norm: float = DEFAULT_DT_NORM,
                             min_views: int = DEFAULT_MIN_VIEWS,
+                            occlusion: bool = True,
+                            depth_tol: float = DEFAULT_DEPTH_TOL,
                             dense_hist: bool = False,
                             chunk: int = 200_000,
                             camera_order: str = "sorted",
-                            render_fn: Optional[Callable[[Any], torch.Tensor]] = None,
+                            render_fn: Optional[Callable[[Any], Any]] = None,
                             pipe=None, bg=None) -> VoteBundle:
     """Recompute the per-Gaussian semantic signature from per-view maps (§3).
 
@@ -249,17 +280,24 @@ def vote_classes_over_views(gaussians, cameras, store, *,
         ``"render"`` ([D6] default) or ``"project"`` (cheap/preview).
     vote
         ``"first"`` ([D8] default) or ``"majority"``.
+    occlusion
+        Drop samples whose Gaussian is behind the visible surface (default on;
+        fixes the background-ghost failure — spec Risk 1).
+    depth_tol
+        Relative tolerance on inverse depth: a Gaussian is occluded when its
+        ``1/z`` is below ``(1 - depth_tol) x`` the pixel reference.
     dt_norm, min_views
         See §3.4 ([D11], [D7]).
     dense_hist
         Also materialise the ``[N, K]`` id histogram (and its labels).
     chunk
-        Gaussian-chunk size for the projection/sample step (memory bound).
+        Gaussian-chunk size for the sample/accumulate step (memory bound).
     camera_order
         ``"sorted"`` (deterministic, default) or ``"given"``.
     render_fn, pipe, bg
-        For ``visibility="render"``: an injected membership function, or a
-        ``PipelineParams`` and background colour from which one is built.
+        For ``visibility="render"``: an injected ``cam -> (radii, invdepth)``
+        provider (a bare ``radii`` tensor is also accepted), or a
+        ``PipelineParams`` and background colour to build one.
     """
     if visibility not in ("render", "project"):
         raise ValueError(f"unknown visibility {visibility!r} (render|project)")
@@ -287,6 +325,7 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     vote_lab: List[torch.Tensor] = []
 
     n_processed = 0
+    n_occluded = 0
     for cam in cams:
         sem = store.get(cam.image_name, int(cam.image_height), int(cam.image_width))
         if sem is None:
@@ -294,27 +333,64 @@ def vote_classes_over_views(gaussians, cameras, store, *,
         n_processed += 1
         label_map = sem["label"]
         dt_map = sem["dt"]
-        # Render once per view (not per chunk): membership is a whole-scene
-        # quantity; only the projection/sample step is chunked.
-        radii_all = render_fn(cam) if visibility == "render" else None
+        H, W = int(label_map.shape[0]), int(label_map.shape[1])
+
+        # Project every centre once per view (also the z-buffer for `project`).
+        u_all, v_all, w_all, inb_all = project_centers(xyz_all, cam)
+
+        if visibility == "render":
+            out = render_fn(cam)
+            if isinstance(out, tuple):
+                radii_all, invdepth = out
+            else:
+                radii_all, invdepth = out, None
+            counted_all = radii_all > 0
+        else:
+            invdepth = None
+            counted_all = inb_all
+
+        # A sample has a pixel only where the centre is in frame.
+        has_pixel_all = counted_all & inb_all
+
+        ref_map = None
+        if occlusion:
+            if invdepth is not None:
+                ref_map = invdepth
+                if ref_map.dim() == 3:               # rasteriser returns [1,H,W]
+                    ref_map = ref_map[0]
+                ref_map = ref_map.to(torch.float32)
+            else:
+                ref_map = pixel_min_invdepth(u_all, v_all, w_all,
+                                             has_pixel_all, H, W)
+
+        flat_label = label_map.reshape(-1)
+        flat_dt = dt_map.reshape(-1)
+        flat_ref = ref_map.reshape(-1) if ref_map is not None else None
 
         for start in range(0, N, chunk):
             stop = min(start + chunk, N)
-            xyz = xyz_all[start:stop]
-            u, v, _w, in_bounds = project_centers(xyz, cam)
-
-            if visibility == "render":
-                counted = radii_all[start:stop] > 0
-                # a visible but off-frame centre samples void
-                sample_ok = counted & in_bounds
-            else:
-                counted = in_bounds
-                sample_ok = counted
-
-            lab, dtv = _sample(label_map, dt_map, u, v, sample_ok)
-
+            u = u_all[start:stop]
+            counted = counted_all[start:stop]
             if not counted.any():
                 continue
+            idx = _pixel_index(u, v_all[start:stop], W, H)
+            sample_ok = counted & inb_all[start:stop]
+
+            lab = _gather_flat(flat_label, idx, sample_ok, torch.long)
+            dtv = _gather_flat(flat_dt, idx, sample_ok, torch.float32)
+
+            if flat_ref is not None:
+                ref = _gather_flat(flat_ref, idx, sample_ok, torch.float32)
+                gi = 1.0 / w_all[start:stop].clamp_min(1e-12)
+                # behind the surface (smaller 1/z) -> occluded, dropped entirely
+                occluded = sample_ok & (ref > 0) & (gi < ref * (1.0 - depth_tol))
+                if occluded.any():
+                    n_occluded += int(occluded.sum().item())
+                    counted = counted & ~occluded
+                    sample_ok = sample_ok & ~occluded
+                if not counted.any():
+                    continue
+
             tot[start:stop] += counted.to(torch.long)
             lab_sel = counted & (lab > 0)
             void_sel = counted & (lab == 0)
@@ -375,9 +451,12 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     meta = {
         "visibility": visibility,
         "vote": vote,
+        "occlusion": bool(occlusion),
+        "depth_tol": float(depth_tol),
         "camera_order": camera_order,
         "view_order": [c.image_name for c in cams],
         "n_views_processed": n_processed,
+        "n_occluded": n_occluded,
         "dt_norm": float(dt_norm),
         "min_views": int(min_views),
         "n_gaussians": N,
@@ -397,7 +476,9 @@ __all__ = [
     "vote_classes_over_views",
     "order_cameras",
     "project_centers",
+    "pixel_min_invdepth",
     "make_render_fn",
     "DEFAULT_DT_NORM",
     "DEFAULT_MIN_VIEWS",
+    "DEFAULT_DEPTH_TOL",
 ]

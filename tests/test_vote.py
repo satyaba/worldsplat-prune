@@ -215,6 +215,58 @@ def test_render_visibility_excludes_zero_radius():
 
 
 # --------------------------------------------------------------------------- #
+# occlusion (depth-aware lifting)                                               #
+# --------------------------------------------------------------------------- #
+def test_occlusion_rejects_gaussians_behind_surface():
+    # three Gaussians on the optical axis at z = 1 (front), 2, 5; the label sits
+    # on their shared pixel. Without occlusion all inherit the label; with
+    # occlusion only the front one keeps it (the others are behind the surface).
+    cam = _real_cam("A", 100, 100)
+    m = np.zeros((100, 100), dtype=np.int32)
+    m[50, 50] = 7
+    store = SemanticStore(_MapAdapter({"A": m}), device="cpu")
+    g = _Gaussians([[0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [0.0, 0.0, 5.0]])
+
+    no_occl = V.vote_classes_over_views(g, [cam], store, visibility="project",
+                                        vote="first", min_views=1, occlusion=False)
+    assert no_occl.seg.tolist() == [7, 7, 7]          # the background ghost
+
+    occl = V.vote_classes_over_views(g, [cam], store, visibility="project",
+                                     vote="first", min_views=1, occlusion=True)
+    assert occl.seg.tolist() == [7, 0, 0]
+    assert occl.meta["n_occluded"] == 2
+
+
+def test_pixel_min_invdepth():
+    u = torch.tensor([50.0, 50.0, 60.0])
+    v = torch.tensor([50.0, 50.0, 60.0])
+    w = torch.tensor([5.0, 1.0, 2.0])                 # nearest at (50,50) is z=1
+    mask = torch.ones(3, dtype=torch.bool)
+    ref = V.pixel_min_invdepth(u, v, w, mask, H=100, W=100)
+    assert abs(ref[50, 50].item() - 1.0) < 1e-6
+    assert abs(ref[60, 60].item() - 0.5) < 1e-6
+
+
+def test_occlusion_via_rendered_depth():
+    cam = _real_cam("A", 100, 100)
+    m = np.zeros((100, 100), dtype=np.int32)
+    m[50, 50] = 7
+    store = SemanticStore(_MapAdapter({"A": m}), device="cpu")
+    g = _Gaussians([[0.0, 0.0, 1.0], [0.0, 0.0, 5.0]])
+
+    depth = torch.zeros(1, 100, 100)                  # alpha-weighted inverse depth
+    depth[0, 50, 50] = 1.0                            # front surface at z = 1
+
+    def render_fn(_cam):
+        return torch.ones(2, dtype=torch.int32), depth
+
+    res = V.vote_classes_over_views(g, [cam], store, visibility="render",
+                                    vote="first", min_views=1, render_fn=render_fn)
+    assert res.seg.tolist() == [7, 0]                 # the z=5 Gaussian is occluded
+    assert res.n_views.tolist() == [1, 0]
+
+
+# --------------------------------------------------------------------------- #
 # boundary distance + histogram                                                 #
 # --------------------------------------------------------------------------- #
 def test_boundary_dist_interior_block_and_normalizer():

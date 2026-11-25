@@ -176,6 +176,16 @@ Neither is a true z-buffer test: an in-frustum Gaussian behind a surface has
 `radii > 0` and projects in-frame in both. `render` is the more faithful culling
 (honours near/far planes and projected size); `project` is a cheap stand-in.
 
+**Implementation note (Risk 1).** Because neither base test is depth-aware, a
+depth-blind vote lets geometry *behind* an object inherit the object's label and
+paints a ghost of it onto the background (observed on Mip-NeRF 360 `garden`
+vases/tables). The post-hoc pass therefore adds an **optional occlusion test**
+(`occlusion=True`, `depth_tol`): a sample only counts when the Gaussian is not
+behind the visible surface at its pixel — the sheet is the rasteriser's
+α-weighted inverse depth under `render`, or a per-pixel nearest-`z` buffer of the
+centres under `project`. Occluded samples are dropped entirely (not counted as
+void), so a Gaussian seen only through another object falls below `min_views`.
+
 Training used **both**: `render` for visibility, then `project` to find the
 pixel (`add_semantic_stats`, `:653-660`). The post-hoc pass should follow the
 same convention: **`render` by default [D6]**, `project` as an explicit
