@@ -113,25 +113,41 @@ class CallableCaptioner(Captioner):
 
 
 class HFCaptioner(Captioner):
-    """HuggingFace ``image-to-text`` pipeline backend (default: BLIP)."""
+    """HuggingFace captioner backend (default: BLIP).
+
+    Uses ``AutoProcessor`` + ``AutoModelForVision2Seq`` directly rather than the
+    ``image-to-text`` *pipeline*: recent ``transformers`` route that task to the
+    prompt-requiring ``ImageTextToTextPipeline``, which breaks unconditional
+    captioners like BLIP (``You must provide text for this pipeline``). Passing
+    ``prompt`` turns it into *conditional* captioning (BLIP supports it) and is
+    also how you'd steer a small VLM backend.
+    """
 
     def __init__(self, model_id: str = DEFAULT_CAPTION_MODEL, device: str = "cuda",
-                 prompt: Optional[str] = None):
-        from transformers import pipeline
+                 prompt: Optional[str] = None, max_new_tokens: int = 32):
+        from transformers import AutoModelForVision2Seq, AutoProcessor
 
         self.model_id = model_id
         self.prompt = prompt
-        self.pipe = pipeline("image-to-text", model=model_id,
-                             device=0 if str(device).startswith("cuda") else -1)
+        self.max_new_tokens = int(max_new_tokens)
+        self.device = device
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.model = AutoModelForVision2Seq.from_pretrained(model_id).to(device)
+        self.model.eval()
 
     def caption(self, rgb: np.ndarray) -> str:
+        import torch
         from PIL import Image
 
-        kw = {"prompt": self.prompt} if self.prompt else {}
-        res = self.pipe(Image.fromarray(rgb), **kw)
-        if isinstance(res, list) and res:
-            return str(res[0].get("generated_text", ""))
-        return ""
+        image = Image.fromarray(rgb)
+        if self.prompt:
+            inputs = self.processor(images=image, text=self.prompt, return_tensors="pt")
+        else:
+            inputs = self.processor(images=image, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items() if hasattr(v, "to")}
+        with torch.inference_mode():
+            out = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+        return str(self.processor.decode(out[0], skip_special_tokens=True)).strip()
 
 
 # --------------------------------------------------------------------------- #

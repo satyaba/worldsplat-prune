@@ -113,6 +113,26 @@ def test_merge_phrase_lists_order_preserving():
         ["chair", "table", "lamp"]
 
 
+def test_seed_phrase_list_with_callable_captioner():
+    import tempfile
+    from pathlib import Path
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as d:
+        ds = Path(d)
+        (ds / "images").mkdir()
+        for i in range(3):
+            Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(
+                ds / "images" / f"rgb_{i}.png")
+
+        cap = c.CallableCaptioner(lambda rgb: "a brown wooden chair in a room")
+        out = ds / "phrases_seed.txt"
+        phrases = c.seed_phrase_list(ds, cap, n=2, out=out)
+
+        assert "chair" in phrases and "wooden chair" in phrases
+        assert out.exists() and "chair" in out.read_text()
+
+
 if __name__ == "__main__":
     import traceback
 
