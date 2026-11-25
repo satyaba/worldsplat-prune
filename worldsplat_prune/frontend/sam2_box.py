@@ -209,7 +209,10 @@ def label_dataset_boxes(
             maps = labeler.predict_class_maps(
                 work, boxes_scaled, min_area=min_area,
                 max_area_frac=max_area_frac, fill_void=fill_void)
+        from .. import semantic_utils as su
         for cls, inst in maps.items():
+            if inst.shape != (H, W):        # write maps at native frame resolution
+                inst = su.resize_ids(inst, H, W)
             rel = out_subdir_fmt.format(cls=_slug(cls))
             class_dirs.setdefault(str(cls), rel)
             out = dataset_dir / rel / f"{p.stem}.png"
