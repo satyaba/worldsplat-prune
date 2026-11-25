@@ -172,6 +172,7 @@ def test_fuse_instances_per_class_composes():
         # the composite map is consumable by the adapter
         ad = get_adapter("composite", ds)
         assert np.array_equal(ad.load("rgb_0.png"), m0)
+        assert ad.meta()["num_frames"] == 2       # composite_point_labels.npy is not a frame
 
 
 if __name__ == "__main__":

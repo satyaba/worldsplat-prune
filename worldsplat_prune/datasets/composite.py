@@ -151,8 +151,11 @@ class CompositeLabelAdapter(LabelAdapter):
 
         self._index: Dict[str, Path] = {}
         for p in sorted(self.label_dir.iterdir()):
-            if p.is_file() and (p.suffix.lower() == ".npy"
-                                or p.suffix.lower() in {".png", ".tif", ".tiff", ".bmp"}):
+            if not p.is_file():
+                continue
+            if p.stem.endswith("point_labels"):     # skip composite_point_labels.npy
+                continue
+            if p.suffix.lower() == ".npy" or p.suffix.lower() in {".png", ".tif", ".tiff", ".bmp"}:
                 self._index.setdefault(p.stem, p)
 
     def resolve(self, image_name: str):
