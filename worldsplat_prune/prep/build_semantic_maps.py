@@ -48,7 +48,7 @@ def build_semantic_maps(
     text_threshold: float = 0.25,
     min_area: int = 100,
     max_area_frac: float = 0.9,
-    fill_void: bool = True,
+    fill_void: bool = False,
     resize_long_side: Optional[int] = None,
     metric: str = "jaccard",
     min_score: float = 0.25,
@@ -130,7 +130,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--min_views", type=int, default=2)
     ap.add_argument("--color_sim", type=float, default=0.0)
     ap.add_argument("--stride", type=int, default=1)
-    ap.add_argument("--no_fill_void", action="store_true")
+    ap.add_argument("--fill_void", action="store_true",
+                    help="nearest-fill undetected pixels (off by default: keep void)")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--skip_detect", action="store_true")
     ap.add_argument("--detect_only", action="store_true")
@@ -146,7 +147,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         sam2_ckpt=args.sam2_ckpt or "", sam2_cfg=args.sam2_cfg, device=args.device,
         det_model_id=args.det_model_id, box_threshold=args.box_threshold,
         text_threshold=args.text_threshold, min_area=args.min_area,
-        max_area_frac=args.max_area_frac, fill_void=not args.no_fill_void,
+        max_area_frac=args.max_area_frac, fill_void=args.fill_void,
         resize_long_side=args.resize_long_side, metric=args.metric,
         min_score=args.min_score, min_views=args.min_views, color_sim=args.color_sim,
         stride=args.stride, overwrite=args.overwrite,

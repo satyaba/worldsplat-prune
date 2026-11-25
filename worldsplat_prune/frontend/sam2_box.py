@@ -42,7 +42,7 @@ def masks_to_class_maps(
     *,
     min_area: int = 0,
     max_area_frac: float = 1.0,
-    fill_void: bool = True,
+    fill_void: bool = False,
     out_shape: Optional[Tuple[int, int]] = None,
 ) -> Dict[Hashable, np.ndarray]:
     """Compose per-class SAM2 masks into one instance map **per class**.
@@ -52,6 +52,10 @@ def masks_to_class_maps(
     never collide across classes (they are re-based by class later, via the
     composite id). Returns ``{class_key: int32 [H, W] instance map}``; classes
     with no surviving mask are omitted.
+
+    ``fill_void`` defaults to **False** here (unlike the AMG path): box-prompted
+    masks are selective, so undetected pixels must stay void — nearest-filling
+    them would tile the whole frame with the nearest object of the class.
     """
     scores_by_class = scores_by_class or {}
     out: Dict[Hashable, np.ndarray] = {}
@@ -134,7 +138,7 @@ class SAM2BoxLabeler:
         *,
         min_area: int = 0,
         max_area_frac: float = 0.9,
-        fill_void: bool = True,
+        fill_void: bool = False,
     ) -> Dict[Hashable, np.ndarray]:
         """Box-prompt every class's boxes and compose one instance map per class."""
         H, W = rgb.shape[:2]
@@ -166,7 +170,7 @@ def label_dataset_boxes(
     device: str = "cuda",
     min_area: int = 100,
     max_area_frac: float = 0.9,
-    fill_void: bool = True,
+    fill_void: bool = False,
     resize_long_side: Optional[int] = None,
     stride: int = 1,
     overwrite: bool = False,
@@ -243,7 +247,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--max_area_frac", type=float, default=0.9)
     ap.add_argument("--resize_long_side", type=int, default=None)
     ap.add_argument("--stride", type=int, default=1)
-    ap.add_argument("--no_fill_void", action="store_true")
+    ap.add_argument("--fill_void", action="store_true",
+                    help="nearest-fill undetected pixels (off by default: keep void)")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args(argv)
 
@@ -252,7 +257,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         args.dataset_dir, detections, images_subdir=args.images_subdir,
         out_subdir_fmt=args.out_subdir_fmt, sam2_ckpt=args.sam2_ckpt,
         sam2_cfg=args.sam2_cfg, device=args.device, min_area=args.min_area,
-        max_area_frac=args.max_area_frac, fill_void=not args.no_fill_void,
+        max_area_frac=args.max_area_frac, fill_void=args.fill_void,
         resize_long_side=args.resize_long_side, stride=args.stride,
         overwrite=args.overwrite)
     return 0
