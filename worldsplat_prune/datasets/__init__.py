@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .base import LabelAdapter
+from .composite import CompositeLabelAdapter
 from .instance_dir import InstanceDirLabelAdapter
 from .replica import ReplicaLabelAdapter
 
@@ -11,6 +12,9 @@ _ADAPTERS = {
     # so a run reads naturally: --label_adapter sam2.
     "instance_dir": InstanceDirLabelAdapter,
     "sam2": InstanceDirLabelAdapter,
+    # Prompt-driven front-end output: composite (class, instance) maps (§2.2).
+    "composite": CompositeLabelAdapter,
+    "grounded_sam2": CompositeLabelAdapter,
 }
 
 
@@ -21,4 +25,5 @@ def get_adapter(name: str, dataset_dir, cfg=None) -> LabelAdapter:
     return _ADAPTERS[key](dataset_dir, cfg)
 
 
-__all__ = ["LabelAdapter", "ReplicaLabelAdapter", "InstanceDirLabelAdapter", "get_adapter"]
+__all__ = ["LabelAdapter", "ReplicaLabelAdapter", "InstanceDirLabelAdapter",
+           "CompositeLabelAdapter", "get_adapter"]

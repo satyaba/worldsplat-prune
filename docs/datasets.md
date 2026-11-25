@@ -171,6 +171,29 @@ points is a proxy for true 3D GT. It is consistent across all methods and is the
 standard substrate for zero-shot 3D-instance evaluation when only 2D GT exists,
 but absolute numbers should be read as comparative, not as a leaderboard.
 
+### 3.6 Per-class fusion → composite maps (prompt-driven front-end)
+
+The prompt-driven front-end (§2.2) labels **per class**: one per-frame instance-map
+directory per phrase (SAM2 box-prompted). Fusing each class independently keeps
+association from ever crossing classes, and the per-class instance ids are then
+composed into the canonical **composite** id `class_id * 10000 + instance_id`:
+
+```python
+from worldsplat_prune.prep.fuse_instances import fuse_instances_per_class
+
+summary = fuse_instances_per_class(
+    dataset, {"chair": "sem_chair", "table": "sem_table"},
+    metric="jaccard", min_score=0.25, min_views=2)
+```
+
+Writes `<dataset>/semantic_composite/<stem>.npy` (int32 composite maps),
+`composite_point_labels.npy`, and `semantic_instance_fused/class_<cid>/` per-class
+fused maps. Point the harness at the composite maps:
+
+```bash
+--label_adapter composite        # alias: grounded_sam2
+```
+
 ## 4. Label-adapter contract (why instance-only is enough)
 
 Every adapter produces the canonical per-view map `L_v : int32 [H,W]`, `0 == void`;
@@ -183,8 +206,12 @@ the rest of WorldSplat-Prune never knows the source. See `docs/worldsplat_prune_
   boundary geometry (`dt`/normals) that `SemanticStore` derives from `L_v`, but
   cross-view instance identity (the vote pass, target protection) needs the fused
   maps from `worldsplat_prune.prep.fuse_instances`.
+- **Composite** (`composite` / `grounded_sam2`): the front-end's per-object,
+  class-tagged maps — `id = class_id * 10000 + instance_id` (§3.6). Stored as
+  int32 `.npy` (composite ids exceed the 16-bit PNG range); the adapter also reads
+  integer image maps.
 
-Related flags: `--label_adapter {replica,sam2,instance_dir}`,
+Related flags: `--label_adapter {replica,sam2,instance_dir,composite,grounded_sam2}`,
 `--label_dir <dir>` (override the label directory),
 `--min_seg_area N` (drop segments smaller than N px).
 

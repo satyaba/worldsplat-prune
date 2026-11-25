@@ -37,6 +37,7 @@ import numpy as np
 from PIL import Image
 
 from ..segment_sam2 import IMAGE_EXTS
+from ..datasets.composite import COMPOSITE_STRIDE, compose_maps, write_composite_map
 from . import scene_io as sio
 
 
@@ -313,6 +314,7 @@ def fuse_instances(
     metric: str = "jaccard",
     min_score: float = 0.25,
     summary_path: Optional[str | Path] = None,
+    _scene: Optional["sio.ColmapScene"] = None,
 ) -> dict:
     """Fuse per-frame masks into consistent 3D instances.
 
@@ -327,7 +329,7 @@ def fuse_instances(
     out_dir = out_dir if Path(out_dir).is_absolute() else dataset_dir / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    scene = sio.load_colmap_scene(dataset_dir / sparse_subdir)
+    scene = _scene if _scene is not None else sio.load_colmap_scene(dataset_dir / sparse_subdir)
     print(f"[fuse] {len(scene.cameras)} cameras, {scene.xyz.shape[0]} points; "
           f"labels <- {labels_dir}", flush=True)
 
@@ -430,6 +432,138 @@ def fuse_instances(
               "the partition is dominated by a single blob -- check --min_score/--color_sim.",
               flush=True)
     print(f"[fuse] summary -> {sp}", flush=True)
+    return summary
+
+
+def fuse_instances_per_class(
+    dataset_dir: str | Path,
+    class_dirs,
+    *,
+    class_ids=None,
+    out_dir: str | Path = "semantic_instance_fused",
+    composite_out_dir: str | Path = "semantic_composite",
+    images_subdir: str = "images",
+    sparse_subdir: str = "sparse/0",
+    stride: int = COMPOSITE_STRIDE,
+    min_views: int = 2,
+    metric: str = "jaccard",
+    min_score: float = 0.25,
+    color_sim: float = 0.0,
+    radius_fill: int = 0,
+    min_shared_points: int = 2,
+    summary_path: Optional[str | Path] = None,
+) -> dict:
+    """Front-end fusion: associate masks **within each class**, then compose.
+
+    Prompt-driven labelling produces one per-frame instance-map directory per
+    class phrase (SAM2 box-prompted, §2.2). Class ids are consistent by
+    construction, but instance ids restart every frame; fusing each class
+    independently guarantees association never crosses classes, and the resulting
+    per-class instance ids are composed into the canonical composite id
+    ``class_id * stride + instance_id``
+    (:mod:`worldsplat_prune.datasets.composite`).
+
+    ``class_dirs`` maps a class key (a phrase or index) to its per-frame
+    instance-map directory; class ids default to ``1..K`` in that order (pass
+    ``class_ids`` to pin them to a curated phrase list).
+
+    Writes:
+      * ``<dataset>/<out_dir>/class_<cid>/<stem>.png``  per-class fused maps
+      * ``<dataset>/<composite_out_dir>/<stem>.npy``    composite maps (int32)
+      * ``<dataset>/<composite_out_dir>/composite_point_labels.npy``
+      * ``<out_dir>/per_class_summary.json``
+
+    Returns the summary dict.
+    """
+    dataset_dir = Path(dataset_dir)
+
+    def _resolve(p):
+        p = Path(p)
+        return p if p.is_absolute() else dataset_dir / p
+
+    keys = list(class_dirs)
+    if not keys:
+        raise ValueError("class_dirs is empty")
+    if class_ids is None:
+        cid_of = {k: i + 1 for i, k in enumerate(keys)}      # phrase-list order
+    else:
+        missing = [k for k in keys if k not in class_ids]
+        if missing:
+            raise KeyError(f"class_ids missing for {missing}")
+        cid_of = {k: int(class_ids[k]) for k in keys}
+    if len(set(cid_of.values())) != len(cid_of):
+        raise ValueError(f"duplicate class ids: {cid_of}")
+
+    out_dir = _resolve(out_dir)
+    composite_out_dir = _resolve(composite_out_dir)
+    scene = sio.load_colmap_scene(dataset_dir / sparse_subdir)
+
+    per_class = {}
+    for k in keys:
+        cid = cid_of[k]
+        sub = out_dir / f"class_{cid}"
+        summary = fuse_instances(
+            dataset_dir, labels_dir=_resolve(class_dirs[k]), out_dir=sub,
+            images_subdir=images_subdir, sparse_subdir=sparse_subdir,
+            min_shared_points=min_shared_points, min_views=min_views,
+            color_sim=color_sim, radius_fill=radius_fill, metric=metric,
+            min_score=min_score, _scene=scene,
+        )
+        per_class[k] = {"class_id": cid, "labels_dir": str(_resolve(class_dirs[k])),
+                        "out_dir": str(sub), **summary}
+        print(f"[fuse-class] {k!r} -> class_id={cid}: "
+              f"{summary['instances']} instances", flush=True)
+
+    # --- compose composite per-view maps ----------------------------------- #
+    composite_out_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for cam in scene.cameras:
+        class_maps = {}
+        for k in keys:
+            mp = out_dir / f"class_{cid_of[k]}" / f"{cam.stem}.png"
+            if mp.exists():
+                class_maps[cid_of[k]] = sio.read_id_map(mp)
+        if not class_maps:
+            continue
+        comp = compose_maps(class_maps, stride=stride)
+        write_composite_map(composite_out_dir / f"{cam.stem}.npy", comp)
+        written += 1
+
+    # --- composite per-point labels (ambiguous points -> void) -------------- #
+    cid_arr = np.array([cid_of[k] for k in keys], dtype=np.int64)
+    stacked = np.zeros((len(keys), scene.xyz.shape[0]), dtype=np.int64)
+    have_point_labels = False
+    for i, k in enumerate(keys):
+        p = out_dir / f"class_{cid_of[k]}" / "point_labels.npy"
+        if p.exists():
+            stacked[i] = np.load(p).astype(np.int64)
+            have_point_labels = True
+    point_composite = np.zeros(scene.xyz.shape[0], dtype=np.int32)
+    if have_point_labels:
+        nonvoid = stacked > 0
+        counts = nonvoid.sum(axis=0)
+        single = counts == 1
+        if single.any():
+            cols = np.nonzero(single)[0]
+            rows = np.argmax(nonvoid[:, cols], axis=0)
+            vals = stacked[rows, cols]
+            point_composite[cols] = (cid_arr[rows] * stride + vals).astype(np.int32)
+        np.save(composite_out_dir / "composite_point_labels.npy", point_composite)
+
+    summary = {
+        "dataset": str(dataset_dir),
+        "class_ids": {str(k): cid_of[k] for k in keys},
+        "stride": stride,
+        "composite_out_dir": str(composite_out_dir),
+        "composite_views": written,
+        "composite_points": int((point_composite > 0).sum()),
+        "classes": per_class,
+    }
+    sp = Path(summary_path) if summary_path else out_dir / "per_class_summary.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps(summary, indent=2, default=str))
+    print(f"[fuse-class] composite: {written} views, "
+          f"{summary['composite_points']} points -> {composite_out_dir}", flush=True)
     return summary
 
 
