@@ -522,15 +522,13 @@ This branch becomes a **new project**. Two principles govern the end state:
 2. **Strip unrelated code** — when conceptualization is complete, no SGDC
    density-control code should remain that the new goal does not use.
 
-**Status: IN PROGRESS (branch `main`).** The code-side inventory has been applied:
-the SGDC density-control code and design docs are removed, the package is renamed
-`sgdc/` → `worldsplat_prune/`, `eval_sgdc.py` → `eval_worldsplat.py`, and the
-remaining SGDC references are cleaned from the notebooks, docs and docstrings.
-Still **pending** (the ADAPT code + ADD items below): the box-prompted SAM2
-labeler, per-class fusion mode, `eval_instances` retarget, the pruning-ablation
-manifest, the new class front-end (Grounded-SAM-2), and the companion
-`docs/worldsplat_prune_report.md`. Paths below are written with the pre-migration
-`sgdc/...` names for reference.
+**Status: IN PROGRESS (branch `main`).** The code-side inventory (KEEP / ADAPT /
+REMOVE) is applied, and the ADD front-end is implemented (pure parts
+unit-tested). Two items remain **blocked, not started**: the pruning-ablation
+manifest (`experiments/runs.py`, depends on the §4–5 operator) and the companion
+`docs/worldsplat_prune_report.md` (depends on results). See the per-item table in
+§9.3. Paths in the inventory below are written with the pre-migration `sgdc/...`
+names for reference.
 
 ### 9.1 Code reuse & cleanup inventory
 
@@ -616,11 +614,48 @@ time.
 - `README.md` → top-level description and links updated.
 
 **Applied so far.** The SGDC design docs (`sgdc_spec.md`, `sgdc_report.md`) are
-removed and `docs/worldsplat_prune_spec.md` is canonical; `docs/datasets.md` and
-`README.md` are adapted (density-control sections removed); the package is
-`worldsplat_prune/`. The **ADAPT** code (box-prompted SAM2, per-class fusion,
-`eval_instances` class/level validation) and the **ADD** front-end (GroundingDINO
-wrapper, captioner→phrase tool, per-class fusion driver, composite adapter) are
-implemented under `worldsplat_prune/frontend/`, `worldsplat_prune/datasets/composite.py`
-and `worldsplat_prune/prep/`. The companion `docs/worldsplat_prune_report.md` is
-still to be written once the pruning results exist.
+removed and `docs/worldsplat_prune_spec.md` is canonical; `docs/datasets.md`,
+`experiments/README.md` and `README.md` are adapted (density-control sections
+removed, front-end/fusion/composite added). The companion
+`docs/worldsplat_prune_report.md` is still to be written once the pruning results
+exist. Full per-item status: §9.3.
+
+### 9.3 Implementation status
+
+Phase legend: **Done** (implemented), **Done\*** (pure parts implemented and
+unit-tested; the heavy model path needs `torch`/`transformers`/`sam2` + weights
+and is *unverified* here), **Partial** (partially applied), **Blocked** (depends
+on the §4–5 pruning operator), **N/A** (already satisfied).
+
+| §9.1 item | phase | where / evidence |
+|---|---|---|
+| KEEP: label adapters, `semantic_utils`, `semantic_store`, `scene_io`, `hloc_sfm`, `verify_alignment`, core 3DGS, `train.py` | N/A | reused as-is |
+| ADAPT: `eval_sgdc.py` → `eval_worldsplat.py` | Done | renamed, SGDC naming dropped; global + band/interior kept |
+| ADAPT: `sgdc/eval_boundary.py` kept | Done | docstrings de-SGDC'd (commit `79388cb`) |
+| ADAPT: `segment_sam2` box-prompted mode | Done\* | new `frontend/sam2_box.py` (`SAM2BoxLabeler`, `masks_to_class_maps`); pure composition tested (commit `45a2692`) |
+| ADAPT: `fuse_instances` per-class mode | Done | `fuse_instances_per_class()` (commit `fac2821`); tested |
+| ADAPT: `eval_instances` retarget | Done | composite-aware lifting + `--level {composite,class,instance}` + `--class_gt` validation (commit `fa094ad`); tested |
+| ADAPT: `budget.py` keep `allocate()`, drop error-budget logic | Done | trimmed to the allocator only |
+| ADAPT: `experiments/` retarget to pruning ablations | Blocked | harness/runner/metrics retained; the pruning arms need the operator |
+| ADAPT: `experiments/runs.py` → pruning-ablation manifest | Blocked | deferred by decision; flags/entry point undefined until §4–5 lands |
+| ADAPT: `train.py`, `scene/gaussian_model.py`, `arguments/` de-SGDC | Done | no SGDC hooks/flags remain |
+| ADAPT: notebooks retargeted | Done | repo URL/dir/branch + text updated (commit `79388cb`) |
+| REMOVE: `budget_probe.py`, `headroom.py`, SGDC training components, CLI flags, run specs, SGDC docs | Done | removed (pre-existing + commit `79388cb`) |
+| ADD: GroundingDINO wrapper | Done\* | `frontend/grounding.py` (HF backend); pure helpers tested (commit `fa094ad`) |
+| ADD: SAM2 box-prompted labeler | Done\* | `frontend/sam2_box.py` |
+| ADD: captioner → phrase-list tool | Done\* | `frontend/caption.py` (HF default, pluggable); pure helpers tested |
+| ADD: per-class fusion driver | Done | `prep/build_semantic_maps.py` + `fuse_instances_per_class` |
+| ADD: composite `(class, instance)` adapter | Done | `datasets/composite.py` (registered `composite`/`grounded_sam2`); tested (commit `fac2821`) |
+| `tests/`: KEEP / REMOVE | Done | kept trio; SGDC tests gone |
+| `tests/test_experiments.py` ADAPT | Partial | SGDC example flags swapped; pruning-harness retarget is **Blocked** |
+| Doc migration: spec replaced | Done | this document is canonical |
+| Doc migration: `docs/worldsplat_prune_report.md` | Blocked | pending results |
+
+**Test coverage:** `tests/test_composite.py` (new) and the extended
+`tests/test_frontend.py` / `tests/test_eval_instances.py` cover the pure
+composition, encoding and evaluation paths; the full suite passes. The `Done\*`
+model paths are written defensively but not exercised against model weights.
+
+**Not covered by §9** (next work): the post-reconstruction pruning operator itself
+(§4–5) — including the `vote_classes_over_views` pass (§3) — which unblocks the
+pruning-ablation manifest and the report.
