@@ -260,6 +260,7 @@ def vote_classes_over_views(gaussians, cameras, store, *,
                             min_views: int = DEFAULT_MIN_VIEWS,
                             occlusion: bool = True,
                             depth_tol: float = DEFAULT_DEPTH_TOL,
+                            mask_margin: float = 0.0,
                             dense_hist: bool = False,
                             chunk: int = 200_000,
                             camera_order: str = "sorted",
@@ -286,6 +287,11 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     depth_tol
         Relative tolerance on inverse depth: a Gaussian is occluded when its
         ``1/z`` is below ``(1 - depth_tol) x`` the pixel reference.
+    mask_margin
+        Drop samples whose pixel is within this many px of a label boundary
+        (``dt < mask_margin``). Front-end masks are a pixel or two generous at
+        silhouettes, so rim samples are where background geometry wrongly
+        inherits the object id; ``0`` disables the filter.
     dt_norm, min_views
         See §3.4 ([D11], [D7]).
     dense_hist
@@ -326,6 +332,7 @@ def vote_classes_over_views(gaussians, cameras, store, *,
 
     n_processed = 0
     n_occluded = 0
+    n_masked = 0
     for cam in cams:
         sem = store.get(cam.image_name, int(cam.image_height), int(cam.image_width))
         if sem is None:
@@ -378,6 +385,17 @@ def vote_classes_over_views(gaussians, cameras, store, *,
 
             lab = _gather_flat(flat_label, idx, sample_ok, torch.long)
             dtv = _gather_flat(flat_dt, idx, sample_ok, torch.float32)
+
+            if mask_margin > 0.0:
+                # silhouettes are where front-end masks are generous; drop rim
+                # samples rather than let background inherit the object id.
+                rim = sample_ok & (dtv < mask_margin)
+                if rim.any():
+                    n_masked += int(rim.sum().item())
+                    counted = counted & ~rim
+                    sample_ok = sample_ok & ~rim
+                if not counted.any():
+                    continue
 
             if flat_ref is not None:
                 ref = _gather_flat(flat_ref, idx, sample_ok, torch.float32)
@@ -453,10 +471,12 @@ def vote_classes_over_views(gaussians, cameras, store, *,
         "vote": vote,
         "occlusion": bool(occlusion),
         "depth_tol": float(depth_tol),
+        "mask_margin": float(mask_margin),
         "camera_order": camera_order,
         "view_order": [c.image_name for c in cams],
         "n_views_processed": n_processed,
         "n_occluded": n_occluded,
+        "n_masked": n_masked,
         "dt_norm": float(dt_norm),
         "min_views": int(min_views),
         "n_gaussians": N,

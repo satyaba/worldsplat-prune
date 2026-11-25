@@ -185,6 +185,10 @@ behind the visible surface at its pixel — the sheet is the rasteriser's
 α-weighted inverse depth under `render`, or a per-pixel nearest-`z` buffer of the
 centres under `project`. Occluded samples are dropped entirely (not counted as
 void), so a Gaussian seen only through another object falls below `min_views`.
+A second guard drops samples within `mask_margin` px of a label boundary (`dt`,
+default 0): front-end silhouettes are a pixel or two generous, and those rim
+pixels are where background geometry slips through the depth test. Both are
+recorded in the bundle metadata (`n_occluded`, `n_masked`).
 
 Training used **both**: `render` for visibility, then `project` to find the
 pixel (`add_semantic_stats`, `:653-660`). The post-hoc pass should follow the

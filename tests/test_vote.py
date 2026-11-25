@@ -267,6 +267,27 @@ def test_occlusion_via_rendered_depth():
 
 
 # --------------------------------------------------------------------------- #
+# mask-rim filter                                                               #
+# --------------------------------------------------------------------------- #
+def test_mask_margin_drops_rim_samples():
+    a = np.zeros((8, 8), dtype=np.int32)
+    a[2:6, 2:6] = 5                                   # object block; edge at row/col 2
+    store = SemanticStore(_MapAdapter({"A": a}), device="cpu")
+    g = _Gaussians([[-0.5, -0.5, 0.0],                # -> (row 2, col 2): boundary
+                    [-0.25, -0.25, 0.0]])             # -> (row 3, col 3): interior
+    cam = _Cam("A", 8, 8)
+
+    off = V.vote_classes_over_views(g, [cam], store, visibility="project",
+                                    vote="first", min_views=1, mask_margin=0.0)
+    assert off.seg.tolist() == [5, 5]
+
+    on = V.vote_classes_over_views(g, [cam], store, visibility="project",
+                                   vote="first", min_views=1, mask_margin=0.5)
+    assert on.seg.tolist() == [0, 5]                  # rim sample dropped
+    assert on.meta["n_masked"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # boundary distance + histogram                                                 #
 # --------------------------------------------------------------------------- #
 def test_boundary_dist_interior_block_and_normalizer():
