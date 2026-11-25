@@ -248,8 +248,7 @@ def point_labels_from_views(scene: "ColmapScene", labels_dir: str | Path,
                             mode: str = "first", min_votes: int = 1) -> np.ndarray:
     """Lift per-view id maps onto the COLMAP points.
 
-    ``mode="first"``   : first labelled view wins (reproduces WorldSplat-Prune's ``seg_top1``
-                         vote, i.e. the raw/unfused behaviour).
+    ``mode="first"``   : first labelled view wins (the raw/unfused behaviour).
     ``mode="majority"``: majority vote across views (0 on ties or below
                          ``min_votes``); this is how a 3D GT/instance labelling is
                          built from per-view maps.

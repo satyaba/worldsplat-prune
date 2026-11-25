@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SGDC: patch CUDA submodules for modern toolchains.
+# WorldSplat-Prune: patch CUDA submodules for modern toolchains.
 #
 # CUDA 12.9 / GCC 14 / Python 3.13 no longer transitively include <cstdint>,
 # which breaks diff_gaussian_rasterization (uint32_t/uint64_t/std::uintptr_t

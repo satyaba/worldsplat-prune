@@ -2,12 +2,13 @@
 
 ### Post-reconstruction, semantic-aware Gaussian pruning for real-time simulations in embodied AI
 
-> **Project:** WorldSplat-Prune (this branch; Python package `worldsplat_prune`, currently `sgdc/`)
-> **Status:** DRAFT — pipeline structurally complete (D1–D18); no code written.**
+> **Project:** WorldSplat-Prune (Python package `worldsplat_prune`, renamed from `sgdc/`)
+> **Status:** design complete (D1–D18); implementation pending.**
 > This document captures the agreed design in full; no structural items remain
-> open. The only outstanding action is review and promotion (§9), done manually.
+> open. The outstanding actions are executing the migration/cleanup (§9) and
+> building the new front-end (§2.2) and the pruning operator (§4–5).
 >
-> **Branch:** `feature/semantic-aware-pruning`
+> **Branch:** `main` (renamed for the new project)
 > **Intended fate:** this branch becomes a new project that **reuses** the
 > semantic-labelling, dataset-prep and evaluation machinery already here, and —
 > once the pipeline is finalized — **strips the unrelated SGDC density-control
@@ -521,11 +522,15 @@ This branch becomes a **new project**. Two principles govern the end state:
 2. **Strip unrelated code** — when conceptualization is complete, no SGDC
    density-control code should remain that the new goal does not use.
 
-**Status: EXECUTED** (branch `feature/worldsplat-prune`). The inventory was
-reviewed and settled, then applied: the SGDC density-control code and design docs
-are removed, the package is renamed `sgdc/` → `worldsplat_prune/`, and
-`eval_sgdc.py` → `eval_worldsplat.py`. Paths below are written with the
-pre-migration `sgdc/...` names for reference.
+**Status: IN PROGRESS (branch `main`).** The code-side inventory has been applied:
+the SGDC density-control code and design docs are removed, the package is renamed
+`sgdc/` → `worldsplat_prune/`, `eval_sgdc.py` → `eval_worldsplat.py`, and the
+remaining SGDC references are cleaned from the notebooks, docs and docstrings.
+Still **pending** (the ADAPT code + ADD items below): the box-prompted SAM2
+labeler, per-class fusion mode, `eval_instances` retarget, the pruning-ablation
+manifest, the new class front-end (Grounded-SAM-2), and the companion
+`docs/worldsplat_prune_report.md`. Paths below are written with the pre-migration
+`sgdc/...` names for reference.
 
 ### 9.1 Code reuse & cleanup inventory
 
@@ -610,6 +615,8 @@ time.
   and harness carry over; density-control sections removed);
 - `README.md` → top-level description and links updated.
 
-**Executed.** The SGDC design docs (`sgdc_spec.md`, `sgdc_report.md`) are removed
-and `docs/worldsplat_prune_spec.md` is canonical; the SGDC density-control code
-is stripped; the package is `worldsplat_prune/`.
+**Applied so far.** The SGDC design docs (`sgdc_spec.md`, `sgdc_report.md`) are
+removed and `docs/worldsplat_prune_spec.md` is canonical; `docs/datasets.md` and
+`README.md` are adapted (density-control sections removed); the package is
+`worldsplat_prune/`. The companion `docs/worldsplat_prune_report.md` is still to
+be written once the pruning results exist.

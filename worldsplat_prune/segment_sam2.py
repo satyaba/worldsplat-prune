@@ -8,10 +8,10 @@ layout :class:`worldsplat_prune.datasets.instance_dir.InstanceDirLabelAdapter` c
     <dataset>/images/<stem>.{png,jpg,jpeg,...}      # input RGB
     <dataset>/semantic_instance/<stem>.png          # uint16 instance ids, 0=void
 
-SAM2 is class-agnostic, so the ids are **instances**, not classes -- exactly the
-unit Component B budgets over (see ``docs/worldsplat_prune_spec.md`` §2.0). Masks are
-composed greedily by predicted IoU and stability, then uncovered pixels are
-nearest-filled so they do not masquerade as boundaries.
+SAM2 is class-agnostic, so the ids are **instances**, not classes -- the unit the
+vote pass transfers onto Gaussians (see ``docs/worldsplat_prune_spec.md`` §2).
+Masks are composed greedily by predicted IoU and stability, then uncovered pixels
+are nearest-filled so they do not masquerade as boundaries.
 
 This module is deliberately split so the *pure* post-processing
 (:func:`masks_to_instance_map`) is importable and testable without SAM2/torch;

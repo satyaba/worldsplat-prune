@@ -58,8 +58,9 @@ def test_build_train_cmd_order():
 
 
 def test_split_extra_string_and_tokens():
-    assert runner._split_extra(["--f_b 0.5 --f_int 2.0"]) == ["--f_b", "0.5", "--f_int", "2.0"]
-    assert runner._split_extra(["--f_b", "0.5"]) == ["--f_b", "0.5"]
+    assert runner._split_extra(["--position_lr_init 0.00016 --lambda_dssim 0.3"]) == [
+        "--position_lr_init", "0.00016", "--lambda_dssim", "0.3"]
+    assert runner._split_extra(["--position_lr_init", "0.00016"]) == ["--position_lr_init", "0.00016"]
     assert runner._split_extra(None) == []
     assert runner._split_extra([]) == []
 

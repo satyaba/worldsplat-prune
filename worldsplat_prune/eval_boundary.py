@@ -1,9 +1,9 @@
 """Boundary-restricted evaluation for WorldSplat-Prune.
 
 Renders a trained model and reports PSNR globally, on a dilated semantic-boundary
-band, and in segment interiors. This is the metric Component A actually targets:
-if boundary-conditional densification helps, it should show up on the band even
-when global PSNR is flat.
+band, and in segment interiors. The band is where semantic pruning is most
+damaging, so it isolates quality at object silhouettes even when global PSNR is
+flat.
 
 Usage:
     python -m worldsplat_prune.eval_boundary --model_path output/base -s <DATASET_DIR> --iteration 30000

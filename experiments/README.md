@@ -179,7 +179,7 @@ Gauss. count, Train time (min), Eval time (s)
 
 Computation is delegated to `eval_worldsplat.py` (with `--json_out`), which
 renders each split on the fly. **The same metric code path scores every method**,
-so SGDC/upstream PLYs alike are directly comparable. The extractor ensures the
+so pruned/upstream PLYs alike are directly comparable. The extractor ensures the
 local rasterizer is installed first (same rasterizer-swap rule as training).
 
 The **band/interior** split is dataset-driven: it comes from the class labels

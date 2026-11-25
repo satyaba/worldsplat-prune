@@ -12,11 +12,11 @@ directory** with a fixed layout; how the labels got there is adapter-specific.
 | `garden`  | `mipnerf360/garden`   | Mip-NeRF 360 | SAM2 instance pseudo-labels | `sam2` |
 | `bicycle` | `mipnerf360/bicycle`  | Mip-NeRF 360 | SAM2 instance pseudo-labels | `sam2` |
 
-`$DATASET_ROOT` defaults to `$HOME_DIR/Dataset`. `garden`/`bicycle` are wired into
-`experiments/runs.py` as the `garden_*`, `bicycle_*` run families (base / B / A.1
-arms), so no manifest edit is needed to run them. `office_0` remains the
-GT-segmentation reference scene; **no second Replica scene is required** — the
-cross-dataset study runs on the two Mip-NeRF 360 scenes above.
+`$DATASET_ROOT` defaults to `$HOME_DIR/Dataset`. `garden`/`bicycle` are run by
+pointing a baseline run at the scene (`run_by_id("base_30k", dataset="mipnerf360/garden")`,
+or the CLI `--dataset`), so no manifest edit is needed to run them. `office_0`
+remains the GT-segmentation reference scene; **no second Replica scene is
+required** — the cross-dataset study runs on the two Mip-NeRF 360 scenes above.
 
 ## 2. Required on-disk layout
 
@@ -86,8 +86,9 @@ check that the edges trace real object/region boundaries before training.
 ### 3.4 Consistent instances (minimal fusion)
 
 Raw SAM2 ids restart every frame, so the same object gets different ids per view.
-Component B reads `seg_top1` with a **first-view-wins vote**, so it needs one id
-per 3D object across views. `worldsplat_prune.prep.fuse_instances` produces that, training-free,
+The post-hoc vote pass transfers one instance id per Gaussian and needs a
+**single id per 3D object across views**. `worldsplat_prune.prep.fuse_instances`
+produces that, training-free,
 from posed RGB + COLMAP (**no depth, no classifier**):
 
 ```bash
@@ -121,7 +122,7 @@ and `fusion_summary.json`.
 > `segment_sam2 --no_fill_void` (don't tile the background) and/or raise
 > `--min_score`. `fusion_summary.json` reports `instances`, `largest_instance_frac`
 > and size percentiles — `instances == 1` or `largest_instance_frac > 0.6` means
-> the labeling is degenerate and headroom/training numbers are not meaningful.
+> the labeling is degenerate and pruning numbers are not meaningful.
 
 **Ingesting off-the-shelf methods.** MaskClustering/SAMPro3D emit *per-point-cloud*
 labels. `worldsplat_prune.prep.scene_io.splat_point_labels_to_views(scene, labels, out_dir)`
@@ -151,17 +152,19 @@ python -m worldsplat_prune.prep.eval_instances --dataset_dir "$DATASET_ROOT/room
   copies, e.g. `office_0` here, do not).
 - Method inputs are either a production `point_labels.npy` (our fusion,
   SAMPro3D, MaskClustering, ...) or a per-view dir (`:first` reproduces the raw
-  `seg_top1` case, `:majority` is the default).
+  first-wins case, `:majority` is the default).
 - Reports **AP25 / AP50 / mAP**, matched **mIoU** (at AP50) and **coverage**;
   predictions are ranked by mask size (no confidence scores are available
   zero-shot). `--iou`, `--min_area` and `--json_out` are available.
 
 **Without a grounding dataset** (the Mip-NeRF 360-only plan) the fusion is treated
 as *infrastructure*, not a benchmarked contribution, and the study leans on the
-GT-free signals: the **headroom test** (§5.1), instance **consistency** stats in
-`fusion_summary.json` (instances, support histogram), and the downstream training
+GT-free signals: the **partition-movement diagnostic** (Jaccard/TV between the
+semantic and geometry-only kept sets — if the partition barely moves the *set*,
+the arm is inert regardless of score quality), instance **consistency** stats in
+`fusion_summary.json` (instances, support histogram), and the downstream render
 metrics (PSNR/SSIM/LPIPS, band/interior, Gaussian count) against the raw and
-scene-global controls.
+geometry-only controls.
 
 **GT caveat.** Replica's instance labels are per *view*; lifting them onto the SfM
 points is a proxy for true 3D GT. It is consistent across all methods and is the
@@ -176,11 +179,10 @@ the rest of WorldSplat-Prune never knows the source. See `docs/worldsplat_prune_
 - **Replica** (`replica`): GT **class** labels remapped to `1..K` (this copy has
   no `semantic_instance/`, so a segment degenerates to a class).
 - **SAM2** (`sam2` / `instance_dir`): per-frame **instance** ids. Unlike Replica
-  classes these are *not* consistent across views — which is fine:
-  - Component **B** allocates its budget *per view*, so per-frame instances are
-    the right unit;
-  - Components **A / A.1** only need the boundary geometry (`dt`/normals) that
-    `SemanticStore` derives from `L_v`.
+  classes these are *not* consistent across views — which is fine for the
+  boundary geometry (`dt`/normals) that `SemanticStore` derives from `L_v`, but
+  cross-view instance identity (the vote pass, target protection) needs the fused
+  maps from `worldsplat_prune.prep.fuse_instances`.
 
 Related flags: `--label_adapter {replica,sam2,instance_dir}`,
 `--label_dir <dir>` (override the label directory),

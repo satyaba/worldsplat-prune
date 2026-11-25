@@ -7,8 +7,8 @@ per-view segment map consumed by WorldSplat-Prune:
 
 The canonical id is a *composite* ``(class_id, instance_id)``. Adapters that
 have instance labels encode both; adapters without them degenerate to
-class-only. The density-control code only ever sees the canonical ``L_v``, so
-it never needs to know where labels come from.
+class-only. The rest of WorldSplat-Prune only ever sees the canonical ``L_v``,
+so it never needs to know where labels come from.
 """
 from __future__ import annotations
 

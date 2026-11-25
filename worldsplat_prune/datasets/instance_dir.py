@@ -16,10 +16,11 @@ Ids are matched by filename **stem**, so extension differences between the RGB
 frames and the label maps are fine. Ids are **per frame**; they are deliberately
 *not* required to be consistent across views:
 
-* Component B allocates its budget *per view*, so per-frame instances are the
-  correct unit;
-* Components A / A.1 only need the boundary geometry (``dt`` / normals) that
-  :class:`~worldsplat_prune.semantic_store.SemanticStore` derives from ``L_v``.
+* the boundary geometry (``dt`` / normals) that
+  :class:`~worldsplat_prune.semantic_store.SemanticStore` derives from ``L_v``
+  is well defined per frame;
+* cross-view instance identity (the vote pass, target-instance protection) needs
+  the fused maps from :mod:`worldsplat_prune.prep.fuse_instances`.
 
 ``min_area`` drops instances smaller than N pixels (set to void, then optionally
 nearest-filled by ``fill_void``), which is the cheap defence against SAM2's
@@ -45,7 +46,7 @@ class InstanceDirLabelAdapter(LabelAdapter):
         if label_dir:
             p = Path(label_dir)
             # a relative label dir is resolved against the dataset, matching the
-            # fusion / headroom tools (otherwise it would be relative to the cwd)
+            # fusion tools (otherwise it would be relative to the cwd)
             self.label_dir = p if p.is_absolute() else (self.dataset_dir / p)
         else:
             self.label_dir = self.dataset_dir / "semantic_instance"

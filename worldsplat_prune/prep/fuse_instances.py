@@ -1,9 +1,9 @@
 """Minimal training-free **3D instance fusion** from per-frame SAM2 masks.
 
 The problem: SAM2 AMG emits class-agnostic masks whose ids restart every frame,
-so the same object gets different ids in every view. WorldSplat-Prune's Component B reads
-``seg_top1`` with a first-view-wins vote (`scene/gaussian_model.py`), so it needs
-a **single id per 3D object across views**. This module produces that by fusing
+so the same object gets different ids in every view. The post-hoc vote pass needs
+a **single id per 3D object across views**, so each Gaussian can carry one
+consistent instance label. This module produces that by fusing
 per-frame masks through the COLMAP point cloud -- *no depth, no classifier, no
 per-scene training*.
 
@@ -217,8 +217,8 @@ def assign_global_ids(
 ) -> List[int]:
     """Map connected components to global ids; drop clusters below ``min_views``.
 
-    Larger clusters get lower ids (stable, and ids are dense/tiny for B's
-    ``seg_top1``). Dropped observations get id 0 (void).
+    Larger clusters get lower ids (stable and dense). Dropped observations get id 0
+    (void).
     """
     groups: Dict[int, List[int]] = defaultdict(list)
     for oi, r in enumerate(roots):
@@ -420,7 +420,7 @@ def fuse_instances(
           f"largest={largest_frac:.0%} of points | {summary['points_labeled']} points labeled "
           f"-> {out_dir}", flush=True)
     # collapse guard: a single (or dominant) instance means association failed and
-    # Component B cannot move on this labeling.
+    # pruning cannot discriminate on this labeling.
     if n_instances <= 1:
         print("[fuse] WARNING: only one instance -- association collapsed. "
               "Try metric=overlap, a lower --min_score, or --no_fill_void masks.",
