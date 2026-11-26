@@ -98,7 +98,7 @@ def run(dataset, iteration, pipe, a, out_dir=None) -> dict:
         extent=scene.cameras_extent,
         keep_frac=a.keep_frac, n_target=a.n_target,
         band=a.band, epsilon=a.epsilon, strength=a.strength, curve=a.curve,
-        use_band=not a.no_band, use_purity=not a.no_purity,
+        use_band=(not a.no_band) and (not a.random), use_purity=(not a.no_purity),
         allocation=a.allocation, target=a.target_, random_control=a.random,
         seed=a.seed)
 
@@ -164,7 +164,8 @@ if __name__ == "__main__":
                         choices=["global", "per_segment"])
     parser.add_argument("--target", default=None, type=int,
                         help="consistent instance id to keep whole (mode b)")
-    parser.add_argument("--random", action="store_true", help="random structure bar")
+    parser.add_argument("--random", action="store_true",
+                        help="random structure bar (random allocation; band protect off)")
     parser.add_argument("--seed", default=0, type=int)
     # output
     parser.add_argument("--out_dir", default=None, type=str)
