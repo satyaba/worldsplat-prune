@@ -34,5 +34,13 @@ class LabelAdapter:
         """Return canonical segment ids ``int32 [H, W]`` (0 == void) or ``None``."""
         raise NotImplementedError
 
+    def load_depth(self, image_name: str):
+        """Return a per-view depth map ``float32 [H, W]`` (0 == invalid), or ``None``.
+
+        Optional: used only by the geometry-edge term ([D20]/T2). Adapters with no
+        depth (the 2D front-end) inherit this ``None``, so the edge term is inert.
+        """
+        return None
+
     def meta(self) -> dict:
         return {"name": self.name, "source": self.name}

@@ -124,6 +124,7 @@ class PruneSpec:
     strength: float = 0.5
     curve: float = 1.0
     band: float = 0.04
+    band_class: Optional[dict] = None    # {class_id: δ} table ([D20]); None = scalar
     epsilon: float = 0.005
     allocation: str = "global"
     target: Optional[int] = None         # mode (b): instance id kept whole
@@ -207,9 +208,33 @@ def build_prune_cmd(spec: PruneSpec, base_dir, out_dir,
            "--out_dir", str(out_dir)]
     if spec.label_dir:
         cmd += ["--label_dir", spec.label_dir]
+    if spec.band_class:
+        for c in sorted(spec.band_class):
+            cmd += ["--band_class", f"{int(c)}:{float(spec.band_class[c]):g}"]
     if spec.target is not None:
         cmd += ["--target", str(spec.target)]
     return cmd + _arm_flags(spec)
+
+
+def build_lod_cmd(base_dir, out_dir, *, budgets: Sequence[float] = PRUNE_KEEP_FRACS,
+                  label_adapter: str = "composite", label_dir: Optional[str] = None,
+                  band: Optional[float] = None,
+                  python: str = sys.executable) -> List[str]:
+    """The ``prune_model.py --export_family`` command for a LOD family (C3).
+
+    One frozen base model -> a manifest + N budget-matched PLYs, scored through
+    the same ``eval_worldsplat`` path as the single-budget runs.
+    """
+    cmd = [python, "prune_model.py", "-m", str(base_dir),
+           "--label_adapter", label_adapter,
+           "--export_family",
+           "--budgets", ",".join(f"{float(b):g}" for b in budgets),
+           "--out_dir", str(out_dir)]
+    if label_dir:
+        cmd += ["--label_dir", label_dir]
+    if band is not None:
+        cmd += ["--band", str(band)]
+    return cmd
 
 
 def prune_dir(spec: PruneSpec, home_dir: Optional[str] = None) -> Path:

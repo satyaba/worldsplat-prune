@@ -149,6 +149,77 @@ def test_report_shape():
     assert rep["n_before"] == 4 and rep["removed"] == 2
 
 
+# --------------------------------------------------------------------------- #
+# class-conditioned δ (D20)                                                     #
+# --------------------------------------------------------------------------- #
+STRIDE = P.DEFAULT_STRIDE
+
+
+def test_band_class_mapping_matches_scalar_when_equal():
+    # a table whose entries equal the scalar must reproduce the scalar band,
+    # so supplying a mapping is a no-op when it agrees with the default (D1).
+    seg = torch.tensor([1 * STRIDE + 1, 1 * STRIDE + 2,
+                        2 * STRIDE + 1, 2 * STRIDE + 2])
+    d = torch.tensor([0.03, 0.05, 0.03, 0.05])
+    ones = torch.ones(4)
+    base = _plan(seg, ones, d, ones, torch.ones(4, 3), keep_frac=0.5, band=0.04)
+    mapped = _plan(seg, ones, d, ones, torch.ones(4, 3), keep_frac=0.5,
+                   band={1: 0.04, 2: 0.04})
+    assert base.band.tolist() == mapped.band.tolist()
+    assert base.keep.tolist() == mapped.keep.tolist()
+    assert base.n_after == mapped.n_after
+
+
+def test_band_class_protects_named_class():
+    # class 1 gets a larger δ; class 2 falls back to the 0.04 default. Both
+    # centres sit at the same d_i, so only the protected class is banded.
+    seg = torch.tensor([1 * STRIDE + 1, 2 * STRIDE + 1])
+    d = torch.tensor([0.06, 0.06])
+    plan = _plan(seg, torch.ones(2), d, torch.ones(2), torch.ones(2, 3),
+                 keep_frac=0.0, band={1: 0.1})
+    assert plan.band.tolist() == [True, False]
+    assert plan.protected.tolist() == [True, False]
+    assert plan.contested.tolist() == [False, True]
+    # floor breach: the protected class alone is kept
+    assert not plan.reachable_floor
+    assert plan.keep.tolist() == [True, False]
+
+
+def test_band_class_class_of_hook():
+    # `class_of` recovers class ids directly (e.g. an already class-only seg).
+    seg = torch.tensor([1, 2])
+    d = torch.tensor([0.06, 0.06])
+    plan = _plan(seg, torch.ones(2), d, torch.ones(2), torch.ones(2, 3),
+                 keep_frac=0.0, band={1: 0.1}, class_of=lambda s: s)
+    assert plan.band.tolist() == [True, False]
+
+
+def test_band_class_recorded_in_meta_and_report():
+    seg = torch.tensor([1 * STRIDE + 1, 2 * STRIDE + 1])
+    d = torch.tensor([0.06, 0.06])
+    plan = _plan(seg, torch.ones(2), d, torch.ones(2), torch.ones(2, 3),
+                 band={1: 0.1, 2: 0.05})
+    assert plan.meta["band_class"] == {1: 0.1, 2: 0.05}
+    assert plan.meta["band"] == P.DEFAULT_BAND
+    rep = plan.report()
+    assert rep["band_class"] == {1: 0.1, 2: 0.05}
+
+
+def test_parse_band_class_pairs_and_json():
+    import json
+    import tempfile
+
+    assert P.parse_band_class(["1:0.05", "3:0.1"]) == {1: 0.05, 3: 0.1}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"2": 0.07, "5": 0.12}, f)
+        path = f.name
+    try:
+        assert P.parse_band_class([path]) == {2: 0.07, 5: 0.12}
+        assert P.parse_band_class(["1:0.05", path]) == {1: 0.05, 2: 0.07, 5: 0.12}
+    finally:
+        os.remove(path)
+
+
 if __name__ == "__main__":
     import traceback
 

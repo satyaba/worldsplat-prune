@@ -163,6 +163,19 @@ def test_prune_cmd_shape_and_matched_budget():
     assert len({s.keep_frac for s in runs.PRUNE_RUNS.values()}) == len(runs.PRUNE_KEEP_FRACS)
 
 
+def test_prune_cmd_band_class_pass_through():
+    from dataclasses import replace
+
+    s = replace(_arm_spec("semantic"), band_class={1: 0.05, 3: 0.1})
+    cmd = runs.build_prune_cmd(s, "/b", "/o")
+    assert "--band_class" in cmd
+    vals = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--band_class"]
+    # deterministic, sorted by class id, formatted as class:delta
+    assert vals == ["1:0.05", "3:0.1"]
+    # no table -> no flag (scalar default unchanged)
+    assert "--band_class" not in runs.build_prune_cmd(_arm_spec("semantic"), "/b", "/o")
+
+
 def test_prune_arms_cover_control_matrix():
     # the grid must contain the candidate, the control and the structure bar
     arms = {s.arm for s in runs.PRUNE_RUNS.values()}
@@ -178,6 +191,20 @@ def test_run_prune_dry():
     s = next(iter(runs.PRUNE_RUNS.values()))
     out = runs.run_prune(s, home_dir="/h", dry=True)
     assert str(out).replace("\\", "/").endswith(s.run_id)
+
+
+def test_build_lod_cmd():
+    cmd = runs.build_lod_cmd("/base", "/out", budgets=(0.25, 0.5, 0.75),
+                             label_dir="/labels", band=0.04)
+    assert cmd[1] == "prune_model.py"
+    assert cmd[cmd.index("-m") + 1] == "/base"
+    assert "--export_family" in cmd
+    assert cmd[cmd.index("--budgets") + 1] == "0.25,0.5,0.75"
+    assert cmd[cmd.index("--out_dir") + 1] == "/out"
+    assert cmd[cmd.index("--label_dir") + 1] == "/labels"
+    assert cmd[cmd.index("--band") + 1] == "0.04"
+    # budgets default to the manifest's discrete set
+    assert runs.build_lod_cmd("/b", "/o").count("--budgets") == 1
 
 
 if __name__ == "__main__":

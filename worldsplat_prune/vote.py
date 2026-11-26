@@ -38,7 +38,7 @@ field          shape             meaning
 ``seg``        ``long [N]``      assigned id (0 = void/unassigned)
 ``purity``     ``float [N]``     ``seg_cnt / tot`` (first) or ``hist_max / tot``
 ``void_frac``  ``float [N]``     ``void / (labeled + void)`` ∈ [0, 1]
-``boundary_dist`` ``float [N]``  ``mean(dt) / dt_norm`` ∈ [0, 1] (0 = on edge)
+``boundary_dist`` ``float [N]``  ``min(dt_class, dt_geom) / dt_norm`` ∈ [0, 1] (0 = on edge, [D20]/T2)
 ``n_views``    ``long [N]``      #views that sampled the Gaussian (occlusion-aware)
 ``seg_hist``   ``float [N, K]``  id distribution (optional, ``dense_hist``)
 ``hist_labels`` ``long [K]``     the id behind each ``seg_hist`` column
@@ -320,6 +320,8 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     tot = torch.zeros(N, dtype=torch.long, device=device)
     void = torch.zeros(N, dtype=torch.long, device=device)
     dt_sum = torch.zeros(N, dtype=torch.float32, device=device)
+    geom_sum = torch.zeros(N, dtype=torch.float32, device=device)
+    n_geom = torch.zeros(N, dtype=torch.long, device=device)
     top1 = torch.zeros(N, dtype=torch.long, device=device)
     top1_cnt = torch.zeros(N, dtype=torch.long, device=device)
 
@@ -333,6 +335,7 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     n_processed = 0
     n_occluded = 0
     n_masked = 0
+    n_edge_views = 0
     for cam in cams:
         sem = store.get(cam.image_name, int(cam.image_height), int(cam.image_width))
         if sem is None:
@@ -340,6 +343,9 @@ def vote_classes_over_views(gaussians, cameras, store, *,
         n_processed += 1
         label_map = sem["label"]
         dt_map = sem["dt"]
+        dtg_map = sem.get("dt_geom")
+        if dtg_map is not None:
+            n_edge_views += 1
         H, W = int(label_map.shape[0]), int(label_map.shape[1])
 
         # Project every centre once per view (also the z-buffer for `project`).
@@ -372,6 +378,7 @@ def vote_classes_over_views(gaussians, cameras, store, *,
 
         flat_label = label_map.reshape(-1)
         flat_dt = dt_map.reshape(-1)
+        flat_dtg = dtg_map.reshape(-1) if dtg_map is not None else None
         flat_ref = ref_map.reshape(-1) if ref_map is not None else None
 
         for start in range(0, N, chunk):
@@ -415,6 +422,13 @@ def vote_classes_over_views(gaussians, cameras, store, *,
             void[start:stop] += void_sel.to(torch.long)
             dt_sum[start:stop] += torch.where(lab_sel, dtv, torch.zeros_like(dtv))
 
+            if flat_dtg is not None:
+                # geometry edge term ([D20]/T2): finite where depth is valid
+                dtg = _gather_flat(flat_dtg, idx, sample_ok, torch.float32)
+                gvalid = sample_ok & torch.isfinite(dtg)
+                geom_sum[start:stop] += torch.where(gvalid, dtg, torch.zeros_like(dtg))
+                n_geom[start:stop] += gvalid.to(torch.long)
+
             if vote == "first":
                 t1 = top1[start:stop]
                 new = lab_sel & (t1 == 0)
@@ -450,10 +464,20 @@ def vote_classes_over_views(gaussians, cameras, store, *,
     purity = torch.where(seg > 0, numer / denom, torch.zeros_like(denom))
     void_frac = torch.where(seen, void.to(torch.float32) / denom,
                             torch.zeros_like(denom))
-    d = torch.where(n_lab > 0,
-                    dt_sum / (n_lab.to(torch.float32) * float(dt_norm)),
-                    torch.ones(N, dtype=torch.float32, device=device))
-    d = d.clamp_(0.0, 1.0)
+    d_class = torch.where(n_lab > 0,
+                          dt_sum / (n_lab.to(torch.float32) * float(dt_norm)),
+                          torch.ones(N, dtype=torch.float32, device=device))
+    d_class = d_class.clamp_(0.0, 1.0)
+    edge_active = n_edge_views > 0
+    if edge_active:
+        # min(class-edge, geometry-edge): a thin depth ridge can protect a
+        # Gaussian the class map leaves void ([D20]/T2). No depth -> unchanged.
+        d_geom = torch.where(n_geom > 0,
+                             geom_sum / (n_geom.to(torch.float32) * float(dt_norm)),
+                             torch.ones(N, dtype=torch.float32, device=device))
+        d = torch.minimum(d_class, d_geom).clamp_(0.0, 1.0)
+    else:
+        d = d_class
 
     seg_hist = hist_labels = None
     if dense_hist:
@@ -477,6 +501,8 @@ def vote_classes_over_views(gaussians, cameras, store, *,
         "n_views_processed": n_processed,
         "n_occluded": n_occluded,
         "n_masked": n_masked,
+        "edge_term": bool(edge_active),
+        "n_edge_views": int(n_edge_views),
         "dt_norm": float(dt_norm),
         "min_views": int(min_views),
         "n_gaussians": N,

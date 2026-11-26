@@ -36,6 +36,7 @@ from scene import Scene
 from scene.gaussian_model import GaussianModel
 from utils.general_utils import safe_state
 
+from worldsplat_prune import export_lod
 from worldsplat_prune import prune as prune_mod
 from worldsplat_prune.datasets import get_adapter
 from worldsplat_prune.semantic_store import SemanticStore
@@ -69,7 +70,29 @@ def _default_tag(a) -> str:
     return f"pruned_{kind}_k{a.keep_frac:g}"
 
 
-def run(dataset, iteration, pipe, a, out_dir=None) -> dict:
+def _resolve_band(a):
+    """The operator's ``band`` argument: a scalar δ, or a ``{class: δ}`` table.
+
+    ``--band_class`` tokens (``class:delta`` pairs and/or a JSON path) build the
+    table; when unset — or empty — the scalar ``--band`` (default 0.04) is used,
+    so behaviour is unchanged ([D20] class-conditioned δ is opt-in).
+    """
+    tokens = getattr(a, "band_class", None)
+    if tokens:
+        table = prune_mod.parse_band_class(tokens)
+        if table:
+            return table
+    return a.band
+
+
+def load_and_vote(dataset, iteration, pipe, a):
+    """Load the frozen model and compute the vote bundle (§3).
+
+    Shared by the single-budget driver :func:`run` and the LOD-family exporter
+    (:mod:`worldsplat_prune.export_lod`), so both plan from the *same* bundle —
+    the operator is called identically and metrics stay comparable.
+    Returns ``(gaussians, scene, bundle)``.
+    """
     dataset.depths = ""
     _fill_model_defaults(dataset)
 
@@ -81,7 +104,9 @@ def run(dataset, iteration, pipe, a, out_dir=None) -> dict:
 
     adapter = get_adapter(a.label_adapter, dataset.source_path,
                           {"label_dir": a.label_dir or None, "min_area": a.min_seg_area})
-    store = SemanticStore(adapter, device="cuda")
+    store = SemanticStore(adapter, device="cuda",
+                          edge_tol=getattr(a, "edge_tol", 0.0),
+                          edge_occlusion_only=getattr(a, "edge_occlusion_only", False))
     print(f"[prune] label adapter: {adapter.meta()}")
 
     bundle = vote_classes_over_views(
@@ -91,16 +116,26 @@ def run(dataset, iteration, pipe, a, out_dir=None) -> dict:
         depth_tol=a.depth_tol, mask_margin=a.mask_margin,
         camera_order="sorted", pipe=pipe)
     print("[prune] " + bundle.summary())
+    return gaussians, scene, bundle
+
+
+def _plan_kwargs(a) -> dict:
+    """The operator kwargs shared by the single-budget run and the LOD family."""
+    return dict(
+        epsilon=a.epsilon, strength=a.strength, curve=a.curve,
+        use_band=(not a.no_band) and (not a.random), use_purity=(not a.no_purity),
+        allocation=a.allocation, target=a.target_, random_control=a.random,
+        seed=a.seed, band=_resolve_band(a))
+
+
+def run(dataset, iteration, pipe, a, out_dir=None) -> dict:
+    gaussians, scene, bundle = load_and_vote(dataset, iteration, pipe, a)
 
     plan = prune_mod.plan_pruning(
         gaussians.get_opacity, gaussians.get_scaling,
         boundary_dist=bundle.boundary_dist, seg=bundle.seg, purity=bundle.purity,
         extent=scene.cameras_extent,
-        keep_frac=a.keep_frac, n_target=a.n_target,
-        band=a.band, epsilon=a.epsilon, strength=a.strength, curve=a.curve,
-        use_band=(not a.no_band) and (not a.random), use_purity=(not a.no_purity),
-        allocation=a.allocation, target=a.target_, random_control=a.random,
-        seed=a.seed)
+        keep_frac=a.keep_frac, n_target=a.n_target, **_plan_kwargs(a))
 
     report = plan.report()
     report["vote"] = {k: bundle.meta[k] for k in
@@ -151,10 +186,20 @@ if __name__ == "__main__":
     parser.add_argument("--no_occlusion", action="store_true")
     parser.add_argument("--depth_tol", default=None, type=float)
     parser.add_argument("--mask_margin", default=None, type=float)
+    # geometry edge term ([D20]/T2): needs adapter depth; off by default
+    parser.add_argument("--edge_tol", default=None, type=float,
+                        help="relative depth-discontinuity threshold for the "
+                             "geometry edge term (0 = off); needs adapter depth")
+    parser.add_argument("--edge_occlusion_only", action="store_true",
+                        help="mark only the near side of depth jumps (occlusion edges)")
     # pruning (§4-5)
     parser.add_argument("--keep_frac", default=0.5, type=float)
     parser.add_argument("--n_target", default=None, type=int)
     parser.add_argument("--band", default=None, type=float)
+    parser.add_argument("--band_class", default=None, action="append",
+                        metavar="CLASS:DELTA",
+                        help="class-conditioned δ (repeatable 'class:delta' pairs "
+                             "and/or a JSON path); unspecified classes keep δ=0.04")
     parser.add_argument("--epsilon", default=None, type=float)
     parser.add_argument("--strength", default=None, type=float)
     parser.add_argument("--curve", default=None, type=float)
@@ -169,6 +214,11 @@ if __name__ == "__main__":
     parser.add_argument("--seed", default=0, type=int)
     # output
     parser.add_argument("--out_dir", default=None, type=str)
+    parser.add_argument("--export_family", action="store_true",
+                        help="write a LOD family (all --budgets) + lod_manifest.json (C3)")
+    parser.add_argument("--budgets", default=None, type=str,
+                        help="comma-separated keep fractions for --export_family "
+                             "(default 0.25,0.5,0.75)")
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--json_out", default=None, type=str)
     parser.add_argument("--quiet", action="store_true")
@@ -183,6 +233,7 @@ if __name__ == "__main__":
 
     _d("visibility", "render"); _d("vote", "first"); _d("dt_norm", 100.0)
     _d("min_views", 3); _d("depth_tol", 0.02); _d("mask_margin", 0.0)
+    _d("edge_tol", 0.0)
     _d("band", prune_mod.DEFAULT_BAND); _d("epsilon", prune_mod.DEFAULT_EPSILON)
     _d("strength", prune_mod.DEFAULT_STRENGTH); _d("curve", prune_mod.DEFAULT_CURVE)
     _d("allocation", "global")
@@ -191,6 +242,15 @@ if __name__ == "__main__":
     args.target_ = args.target
 
     safe_state(args.quiet)
-    print("Pruning " + args.model_path)
-    run(model.extract(args), args.iteration, pipeline.extract(args), args,
-        out_dir=args.out_dir)
+    if args.export_family:
+        budgets = tuple(float(x) for x in
+                        (args.budgets or "0.25,0.5,0.75").split(",") if x.strip())
+        out_dir = args.out_dir or os.path.join(args.model_path, "lod_family")
+        print(f"Exporting LOD family for {args.model_path} at {budgets}")
+        export_lod.export_lod_family(
+            model.extract(args), args.iteration, pipeline.extract(args), args,
+            out_dir=out_dir, budgets=budgets)
+    else:
+        print("Pruning " + args.model_path)
+        run(model.extract(args), args.iteration, pipeline.extract(args), args,
+            out_dir=args.out_dir)

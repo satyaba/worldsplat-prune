@@ -12,4 +12,5 @@ See ``Prepare_Datasets.ipynb`` for the end-to-end driver.
 """
 from __future__ import annotations
 
-__all__ = ["hloc_sfm", "scene_io", "fuse_instances", "eval_instances"]
+__all__ = ["hloc_sfm", "scene_io", "fuse_instances", "eval_instances",
+           "label_from_reference"]

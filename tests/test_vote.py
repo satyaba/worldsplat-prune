@@ -44,6 +44,17 @@ class _MapAdapter(LabelAdapter):
         return self._maps.get(Path(image_name).stem)
 
 
+class _DepthMapAdapter(_MapAdapter):
+    """In-memory adapter that also carries a per-view depth map (T2)."""
+
+    def __init__(self, maps, depths):
+        super().__init__(maps)
+        self._depths = {k: np.asarray(v, dtype=np.float32) for k, v in depths.items()}
+
+    def load_depth(self, image_name):
+        return self._depths.get(Path(image_name).stem)
+
+
 class _Cam:
     """Minimal camera with an identity clip transform (world -> pixel)."""
 
@@ -311,6 +322,51 @@ def test_boundary_dist_interior_block_and_normalizer():
                                      visibility="project", vote="first",
                                      min_views=1, dt_norm=1.0)
     assert res1.boundary_dist[0].item() == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# geometry-edge term ([D20]/T2)                                                 #
+# --------------------------------------------------------------------------- #
+def test_edge_term_off_by_default():
+    lab = np.zeros((4, 4), dtype=np.int32); lab[2, 2] = 5
+    depth = np.full((4, 4), 5.0, dtype=np.float32); depth[2, :] = 1.0
+    adapter = _DepthMapAdapter({"A": lab}, {"A": depth})
+    # default edge_tol = 0 -> the store carries no geometry distance
+    assert "dt_geom" not in SemanticStore(adapter, device="cpu").get("A", 4, 4)
+    assert "dt_geom" in SemanticStore(adapter, device="cpu", edge_tol=0.05).get("A", 4, 4)
+
+
+def test_edge_term_protects_void_pixels_via_depth_ridge():
+    # class map all void, but a thin depth ridge at row 2 is a geometry edge, so
+    # a Gaussian there gets boundary_dist 0 -> band-protected despite void.
+    lab = np.zeros((4, 4), dtype=np.int32)
+    depth = np.full((4, 4), 5.0, dtype=np.float32)
+    depth[2, :] = 1.0
+    adapter = _DepthMapAdapter({"A": lab}, {"A": depth})
+    store = SemanticStore(adapter, device="cpu", edge_tol=0.05)
+    # g0 -> (row 2, col 2) on the ridge; g1 -> (row 0, col 0) far from it
+    g = _Gaussians([[0.0, 0.0, 0.0], [-1.0, -1.0, 0.0]])
+    res = V.vote_classes_over_views(g, [_Cam("A", 4, 4)], store,
+                                    visibility="project", vote="first", min_views=1)
+    assert res.meta["edge_term"] and res.meta["n_edge_views"] == 1
+    assert res.seg.tolist() == [0, 0]                 # class stays void
+    assert res.boundary_dist[0].item() == 0.0         # on the geometry edge
+    assert res.boundary_dist[1].item() > 0.0          # interior: no protection
+
+
+def test_edge_term_matches_class_only_when_no_depth():
+    # same labels, no depth anywhere -> boundary_dist equals the class-only run.
+    lab = np.zeros((4, 4), dtype=np.int32); lab[2, 2] = 5
+    adapter = _MapAdapter({"A": lab})
+    store_off = SemanticStore(adapter, device="cpu")
+    store_on = SemanticStore(adapter, device="cpu", edge_tol=0.05)   # no depth to read
+    g = _Gaussians([[0.0, 0.0, 0.0]])
+    off = V.vote_classes_over_views(g, [_Cam("A", 4, 4)], store_off,
+                                    visibility="project", vote="first", min_views=1)
+    on = V.vote_classes_over_views(g, [_Cam("A", 4, 4)], store_on,
+                                   visibility="project", vote="first", min_views=1)
+    assert off.boundary_dist.tolist() == on.boundary_dist.tolist()
+    assert not on.meta["edge_term"]
 
 
 def test_dense_hist_majority():

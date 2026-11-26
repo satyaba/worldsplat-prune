@@ -5,6 +5,7 @@ from .base import LabelAdapter
 from .composite import CompositeLabelAdapter
 from .instance_dir import InstanceDirLabelAdapter
 from .replica import ReplicaLabelAdapter
+from .tum2twin import TUM2TWINLabelAdapter
 
 _ADAPTERS = {
     "replica": ReplicaLabelAdapter,
@@ -15,6 +16,9 @@ _ADAPTERS = {
     # Prompt-driven front-end output: composite (class, instance) maps (§2.2).
     "composite": CompositeLabelAdapter,
     "grounded_sam2": CompositeLabelAdapter,
+    # Urban reference geometry: LoD/LiDAR/ALS rasterised to composite maps (C2, §2.3).
+    "tum2twin": TUM2TWINLabelAdapter,
+    "reference": TUM2TWINLabelAdapter,
 }
 
 
@@ -26,4 +30,4 @@ def get_adapter(name: str, dataset_dir, cfg=None) -> LabelAdapter:
 
 
 __all__ = ["LabelAdapter", "ReplicaLabelAdapter", "InstanceDirLabelAdapter",
-           "CompositeLabelAdapter", "get_adapter"]
+           "CompositeLabelAdapter", "TUM2TWINLabelAdapter", "get_adapter"]

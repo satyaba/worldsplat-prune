@@ -9,7 +9,8 @@ scoring the result are separate (see the ``prune_model.py`` driver).
 The pipeline (``docs/worldsplat_prune_spec.md`` §4):
 
 0. **Gates**, in precedence ``band > dead > contested``:
-   ``band_i = d_i < band`` ([D1] absolute protect); ``target_i = seg_i ==
+   ``band_i = d_i < δ_i`` ([D1] absolute protect; [D20] class-conditioned
+   ``δ_i``); ``target_i = seg_i ==
    s_target`` ([D13], budget-scope); ``protected = band or target``;
    ``dead_i = (α_i < ε) or (max_j s_ij > 0.1·extent)`` **and not band_i** ([D5]);
    ``contested = not protected and not dead``.
@@ -34,8 +35,11 @@ is ``use_band=False, use_purity=False``; the random structure bar is
 """
 from __future__ import annotations
 
+import json
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional, Union
 
 import torch
 
@@ -47,6 +51,14 @@ DEFAULT_EPSILON = 0.005      # alpha floor (the trainer's prune call)
 DEFAULT_STRENGTH = 0.5       # σ, semantic strength
 DEFAULT_CURVE = 1.0          # a, purity curve
 DEFAULT_EXTENT_FRAC = 0.1    # max(s) > 0.1 * cameras_extent -> dead
+# Composite `(class, instance)` stride; keep in sync with
+# ``worldsplat_prune.datasets.composite.COMPOSITE_STRIDE``. Defined here so this
+# module stays a pure-torch import (no cv2/numpy via the dataset package).
+DEFAULT_STRIDE = 10_000
+
+# The band threshold δ: a scalar (D1, all classes) or a `{class_id: δ}` table
+# ([D20], class-conditioned; unspecified classes fall back to DEFAULT_BAND).
+BandSpec = Union[float, Mapping[int, float]]
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +83,61 @@ def score_gaussians(alpha, scaling, purity, *, strength=DEFAULT_STRENGTH,
     if not use_purity:
         return geom
     return geom * semantic_confidence(purity, strength, curve)
+
+
+# --------------------------------------------------------------------------- #
+# band (δ) — [D1]/[D20]                                                          #
+# --------------------------------------------------------------------------- #
+def parse_band_class(values) -> dict:
+    """Parse ``--band_class`` tokens into a ``{class_id: δ}`` table.
+
+    Each token is either a ``class:delta`` pair (repeatable) or the path of a
+    JSON object ``{class_id: delta}``. A token that names an existing ``.json``
+    file is always read as JSON (so Windows paths containing ``:`` still work);
+    otherwise a ``class:delta`` pair is expected.
+    """
+    table: dict = {}
+    for tok in values or []:
+        tok = str(tok).strip()
+        if not tok:
+            continue
+        if tok.lower().endswith(".json") or os.path.exists(tok):
+            with open(tok, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, Mapping):
+                raise ValueError(f"band_class JSON must be an object: {tok}")
+            for k, v in data.items():
+                table[int(k)] = float(v)
+        else:
+            if ":" not in tok:
+                raise ValueError(
+                    f"band_class token must be 'class:delta' or a JSON path: {tok!r}")
+            k, v = tok.split(":", 1)
+            table[int(k)] = float(v)
+    return table
+
+
+def band_delta(seg: torch.Tensor, table: Mapping[int, float], default: float,
+               *, stride: int = DEFAULT_STRIDE,
+               class_of: Optional[Callable] = None,
+               device=None) -> torch.Tensor:
+    """Per-Gaussian δ ``[N]`` from a ``{class_id: δ}`` table ([D20]).
+
+    The class id is ``class_of(seg)`` when a hook is given, else ``seg // stride``
+    (recovering the composite ``(class, instance)`` half, §4.1). Classes absent
+    from ``table`` get ``default`` (the scalar D1 δ).
+    """
+    if class_of is not None:
+        cls = class_of(seg)
+    else:
+        if int(stride) <= 0:
+            raise ValueError("stride must be positive when class_of is None")
+        cls = torch.div(seg, int(stride), rounding_mode="floor")
+    delta = torch.full(cls.shape, float(default), dtype=torch.float32,
+                       device=device if device is not None else cls.device)
+    for c, v in table.items():
+        delta[cls == int(c)] = float(v)
+    return delta
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +184,8 @@ class PrunePlan:
             "reachable_floor": self.reachable_floor,
             "reachable_ceiling": self.reachable_ceiling,
             "removed": removed,
+            "band": self.meta.get("band"),
+            "band_class": self.meta.get("band_class", {}),
         }
 
 
@@ -162,7 +231,7 @@ def plan_pruning(alpha, scaling, *, boundary_dist, seg, purity,
                  extent: float,
                  keep_frac: float = 0.5,
                  n_target: Optional[int] = None,
-                 band: float = DEFAULT_BAND,
+                 band: BandSpec = DEFAULT_BAND,
                  epsilon: float = DEFAULT_EPSILON,
                  strength: float = DEFAULT_STRENGTH,
                  curve: float = DEFAULT_CURVE,
@@ -172,7 +241,9 @@ def plan_pruning(alpha, scaling, *, boundary_dist, seg, purity,
                  target: Optional[int] = None,
                  dead_extent_frac: float = DEFAULT_EXTENT_FRAC,
                  random_control: bool = False,
-                 seed: int = 0) -> PrunePlan:
+                 seed: int = 0,
+                 stride: int = DEFAULT_STRIDE,
+                 class_of: Optional[Callable] = None) -> PrunePlan:
     """Plan a pruning pass (§4–5). Pure tensors; device-agnostic.
 
     Parameters
@@ -187,7 +258,11 @@ def plan_pruning(alpha, scaling, *, boundary_dist, seg, purity,
     keep_frac or n_target
         Global budget: keep ``round(keep_frac·N)`` (or exactly ``n_target``).
     band, epsilon, strength, curve
-        Hyperparameters ([D1]/[D11]/[D12]).
+        Hyperparameters ([D1]/[D11]/[D12]). ``band`` is a scalar δ (default) or a
+        ``{class_id: δ}`` table for class-conditioned protection ([D20]).
+    stride, class_of
+        How to recover the class id from a composite ``seg``: ``class_of(seg)`` if
+        given, else ``seg // stride`` ([D20]).
     use_band, use_purity
         Control-matrix switches: ``False/False`` is the geometry-only control.
     allocation
@@ -206,7 +281,16 @@ def plan_pruning(alpha, scaling, *, boundary_dist, seg, purity,
     device = alpha.device
 
     # ---- (0) gates ------------------------------------------------------- #
-    band_mask = (d < float(band)) if use_band else torch.zeros(N, dtype=torch.bool, device=device)
+    if isinstance(band, Mapping):
+        band_table = {int(k): float(v) for k, v in band.items()}
+        band_default = float(DEFAULT_BAND)
+        delta = band_delta(seg, band_table, band_default, stride=stride,
+                           class_of=class_of, device=device)
+        band_mask = (d < delta) if use_band else torch.zeros(N, dtype=torch.bool, device=device)
+    else:
+        band_table = {}
+        band_default = float(band)
+        band_mask = (d < band_default) if use_band else torch.zeros(N, dtype=torch.bool, device=device)
     if target is not None:
         target_mask = seg == int(target)
     else:
@@ -265,7 +349,8 @@ def plan_pruning(alpha, scaling, *, boundary_dist, seg, purity,
         allocation=allocation,
         meta={"use_band": use_band, "use_purity": use_purity,
               "strength": float(strength), "curve": float(curve),
-              "band": float(band), "epsilon": float(epsilon),
+              "band": band_default, "band_class": band_table,
+              "epsilon": float(epsilon),
               "extent": float(extent), "random_control": bool(random_control)})
 
 
@@ -285,9 +370,12 @@ __all__ = [
     "score_gaussians",
     "geometry_backbone",
     "semantic_confidence",
+    "band_delta",
+    "parse_band_class",
     "jaccard",
     "DEFAULT_BAND",
     "DEFAULT_EPSILON",
     "DEFAULT_STRENGTH",
     "DEFAULT_CURVE",
+    "DEFAULT_STRIDE",
 ]

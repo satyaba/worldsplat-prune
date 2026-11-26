@@ -1,12 +1,17 @@
 # WorldSplat-Prune — Design Spec (DRAFT)
 
-### Post-reconstruction, semantic-aware Gaussian pruning for real-time simulations in embodied AI
+### Post-reconstruction, semantic-aware Gaussian pruning for budget-controllable Level-of-Detail in urban digital twins
 
 > **Project:** WorldSplat-Prune (Python package `worldsplat_prune`, renamed from `sgdc/`)
-> **Status:** design complete (D1–D18); implementation pending.**
-> This document captures the agreed design in full; no structural items remain
-> open. The outstanding actions are executing the migration/cleanup (§9) and
-> building the new front-end (§2.2) and the pruning operator (§4–5).
+> **Status:** operator design complete (D1–D18); domain framing extended for
+> **urban digital twins (UDTs)** (D19–D24); implementation pending.**
+> This document captures the agreed design in full. The operator (D1–D18) is
+> domain-agnostic and unchanged; the **domain framing moved from embodied AI to
+> urban LoD** — the objective (§1), label source (§2.3), evaluation protocol
+> (§6), risks (§8) and decisions (§7) are updated accordingly. The outstanding
+> actions are the migration/cleanup (§9), the TUM2TWIN **reference-geometry
+> adapter** (§2.3, §9.3), and the **UDT task metrics** (§6). The pruning operator
+> (§4–5) is implemented (§9.3).
 >
 > **Branch:** `main` (renamed for the new project)
 > **Intended fate:** this branch becomes a new project that **reuses** the
@@ -19,21 +24,71 @@
 ## 1. Objective
 
 Given an **already trained** 3DGS model (a PLY; we do **not** re-run
-reconstruction from scratch), remove Gaussians to meet a **real-time render
-budget** while preserving the scene's **semantic structure**, so the pruned
-asset is usable as a simulation substrate for **embodied AI** — where a robot
-consumes the render for collision/occupancy reasoning and stable per-object
-appearance, not just for a human viewer.
+reconstruction from scratch), remove Gaussians to meet a **target render
+budget** while preserving the scene's **semantic structure**, so the reduced
+asset is a usable, budget-controllable **Level-of-Detail (LoD)** product for an
+**urban digital twin (UDT)** — where downstream tasks (LoD3 building
+reconstruction, point-cloud semantic segmentation, roof/solar-potential
+analysis) consume the asset for *semantic* and *geometric* reasoning, not just
+for a human viewer.
+
+The target domain is **urban scenes** — captured terrestrial, mobile and aerial,
+and very large (tens of millions of Gaussians). The benchmark is **TUM2TWIN**
+(§6): a georeferenced, multitemporal, multimodal UDT dataset with LoD1/2/3
+building models, terrestrial/mobile/aerial laser scanning, imagery and ALS
+semantic classes. The operator is **post-reconstruction and training-free**: it
+operates on any frozen PLY produced by any pipeline — precisely the regime the
+urban-LoD literature has *not* addressed (§1.1).
 
 The claim to test is narrow and falsifiable:
 
 > A semantic-aware pruning operator beats a **geometry-only** render-budget cap
 > and a **size-matched random** control at the same Gaussian count — on
-> reconstruction quality overall and on the semantic-boundary band specifically.
+> reconstruction quality overall and on the **semantic-boundary band**
+> specifically — where the band is the set of **urban class boundaries**
+> (building/sky, building/vegetation, road/sidewalk, …), and the payoff is a
+> **downstream UDT task**, not a viewer.
 
 If it does not, the honest result is negative.
 
-### 1.1 Why this replaces the SGDC density-control line
+### 1.1 Framing: training-free, semantics-faithful LoD for urban digital twins
+
+Urban 3DGS research has concentrated on **in-training** solutions — divide-and-
+conquer training and progressive LoD (CityGaussian, VastGaussian, Hier-3DGS,
+Octree-GS, Scaffold-GS, GoDe/CLoD-GS), anchor pruning (Urban-GS), and
+contribution/sensitivity compression (MaskGaussian, ParetoGS). Semantic
+*density control during training* also exists. Almost none of it reduces an
+**already-built** asset, with a **semantic** prior, using the twin's own
+**reference geometry**.
+
+The object of study is therefore reframed:
+
+> **Given a frozen urban 3DGS digital twin, produce a family of
+> reduced-complexity assets that preserve the class boundaries, rooflines and
+> thin structures that UDT downstream tasks depend on — *without retraining* —
+> where geometry-only pruning degrades exactly those structures.**
+
+The domain's own pain points are the motivation: the ISPRS 2025 evaluation of
+3DGS for urban reconstruction reports that large urban scenes require tens of
+millions of Gaussians, that occluded/boundary regions give unstable geometry and
+high metric variance, and that deployment demands compression/LoD. This operator
+targets that regime directly (§6).
+
+### 1.2 Contributions to claim (pick 3–4; do not claim all)
+
+| # | Contribution | Differentiator |
+|---|---|---|
+| **C1** | **Training-free, semantic-boundary-preserving pruning operator** (band protect + bounded purity confidence), with **class-conditioned δ** and a **geometry-edge term** (both implemented) | post-hoc ≠ in-training density control; semantic ≠ pure photometric/contribution pruning |
+| **C2** | **Reference-geometry-anchored labeling** — the twin's **LoD models / LiDAR / ALS semantics** as the 3D semantic prior, not noisy per-view 2D maps (implemented: `tum2twin`/`reference` adapter + `label_from_reference` driver) | uses DT reference data absent from other pruning work; removes the 2D-label-noise confound |
+| **C3** | **Budget-controllable "semantic LoD" family** — one frozen asset → discrete budgets (0.25/0.5/0.75) for streaming, with better boundary retention than baselines (export artifact implemented; class-conditioned budgets pending) | LoD is *semantically* defined in DTs (LoD1→3 = building detail); the band+class protection maps onto it |
+| **C4** | **Task-aligned evaluation** — LoD-edge preservation, semantic-segmentation consistency, roof/solar-area error, LoD3 reconstruction, all at matched budget | replaces the old "no task metric" gap (§8) with the domain's own downstream tasks |
+| **C5** | **Temporal consistency across UDT updates** — re-pruning stays consistent across multitemporal captures | only possible because the benchmark is multitemporal; hard to copy |
+| **C6** | **Asset/landmark protection** (mode (b)) as a UDT control — preserve a chosen building/class/instance | application-motivated, cheap, evaluation-friendly |
+
+The sharpest defensible set is **C1 + C2 + C4**; **C5** (temporal) is the hardest
+to copy. See §8 for the novelty risks that must be stated explicitly.
+
+### 1.3 Why this replaces the SGDC density-control line
 
 The prior in-training study (`docs/sgdc_spec.md`, `docs/sgdc_report.md`) found
 that **segmentation guidance was inert during training**: every semantic
@@ -54,11 +109,12 @@ a new research direction, not a continuation of SGDC.
 
 | Item | Value |
 |---|---|
+| **Domain** | **urban digital twins** (TUM2TWIN, §6) — terrestrial/mobile/aerial, multitemporal, very large |
 | Input | a trained model dir (`point_cloud/iteration_<N>/point_cloud.ply`) |
 | Trains anything | **No** |
 | Reuses | `sgdc.datasets` label adapters, `sgdc.semantic_store.SemanticStore`, `sgdc.budget` allocator, `eval_sgdc.py` metric path |
-| New | a post-hoc **class-vote pass** (§3) and a **candidate/selection** operator (§4–5) |
-| Evaluation | the same `eval_sgdc.py` / `experiments.metrics` code path as every other row |
+| New | a post-hoc **class-vote pass** (§3), a **candidate/selection** operator (§4–5), and a **reference-geometry label adapter** (§2.3) |
+| Evaluation | the same `eval_sgdc.py` / `experiments.metrics` code path as every other row, extended with **UDT task metrics** (§6) |
 
 Gaussians are never labelled from a 3D-fused point cloud. The 3D instance fusion
 (`sgdc/prep/fuse_instances.py`) operates on **COLMAP points** and exists only to
@@ -76,10 +132,21 @@ classifier:
 - **Replica GT** (adapter `replica`) — ground-truth **class** labels read from
   disk, not generated from RGB.
 
-"Multi-class binary classification from RGB" is therefore **not** supported
-today; the route adopted to close the gap is specified in **§2.2**.
+For the **urban framing the primary route is different**: the twin's own
+**reference geometry** — LoD building models, laser-scanning point clouds and
+ALS semantic classes — supplies a 3D semantic prior directly, with no RGB
+classifier and no per-view 2D pseudo-labels. It is specified in **§2.3**, and it
+**removes the "things-only" coverage weakness** (§8) that afflicts image-based
+detection on stuff-heavy urban scenes. The prompt-driven 2D front-end (§2.2) is
+retained only as the **fallback for scenes without reference data**, and as the
+`2D vs 3D reference labels` ablation.
 
-### 2.2 Class front-end — prompt-driven, multi-class (chosen route)
+### 2.2 Class front-end — prompt-driven, multi-class (fallback / ablation)
+
+> **Status under the urban framing.** This route is **no longer the primary
+> label source**; §2.3 (reference geometry) is. Keep it as the **fallback** for
+> scenes without LoD/LiDAR, and as the `2D vs 3D reference labels` ablation.
+> D14–D17 remain valid *for this route only*.
 
 **Decision [D14]:** the class map is produced **prompt-driven / open-vocabulary** —
 **no fixed taxonomy**; classes are text phrases. This is the "multi-class, no
@@ -120,13 +187,65 @@ phrase list ─► GroundingDINO (open-vocab detector) ─► boxes
 - **Coverage caveat:** GroundingDINO detects **things**, so **stuff** classes
   (wall/floor/sky) appear only if explicitly prompted, and detection there is
   weak — unlike a mask-classifier route, expect sparse, stuff-poor labels.
-- **Validation:** score predicted classes against **Replica GT classes** before
-  trusting any pruning result.
+- **Validation:** score predicted classes against the **reference-geometry
+  classes** (§2.3) — or Replica GT where available — before trusting any pruning
+  result.
 
 Reused vs new: reuses `sgdc/segment_sam2.py` (SAM2 weights + composition),
 `masks_to_instance_map`, `sgdc/prep/fuse_instances.py` and `scene_io`; **new** =
 a GroundingDINO wrapper, an SAM2 box-prompted labeler, and a captioner→phrase-list
 tool.
+
+### 2.3 Reference-geometry front-end — urban LoD/LiDAR (chosen route)
+
+**Decision [D19]:** in urban scenes the per-view label map `L_v` is derived from
+the twin's **reference geometry**, not from RGB:
+
+```
+LoD1/2/3 building models ─┐
+ALS / LiDAR point clouds  ─┼─► 3D semantic prior ──► label each frozen Gaussian
+ALS 8-class semantics     ─┘        (class + instance)         │
+                                                               ▼
+                       per-view L_v by projecting labelled Gaussians into each
+                       camera  ==  the canonical adapter contract (§4)
+```
+
+- **3D-first labelling.** Each Gaussian centre inherits a class from the nearest
+  reference surface (LoD face / LiDAR point) within a distance *and*
+  normal-agreement tolerance; the instance id comes from the LoD building/object
+  id. Because the prior is 3D, ids are **cross-view consistent by construction** —
+  the reference route does **not** need `fuse_instances`.
+- **Classes = the ALS taxonomy** (unclassified, ground, building, water,
+  object/vegetation, bridge, …) plus LoD building parts (roof/facade). This is a
+  **fixed** taxonomy — deliberately: it is the DT's own standard. §2.2's [D14]
+  "no taxonomy" applies to the *open-vocab route only*; the reference route is
+  explicitly taxonomy-bound.
+- **Per-view `L_v`** is written by projecting the labelled Gaussians (or by
+  rasterising the labelled reference geometry) into each camera, so the rest of
+  the pipeline — `SemanticStore`, the vote (§3), the operator (§4–5) — is
+  unchanged.
+- **Void / coverage.** Unmatched Gaussians (sky, unexplored space, thin
+  structures the reference misses) → `0`; the bounded-confidence floor (§5) keeps
+  them competing on geometry, so **void ≠ prunable** (§8 risk 2).
+- **Validation.** Score reference-derived classes against held-out ALS labels and
+  (on scenes that have them) against 2D semantic maps. The LoD models also serve
+  as the **geometric GT** for the §6 task metrics.
+
+**New components:** `worldsplat_prune/datasets/tum2twin.py` (adapter ids
+`tum2twin` / `reference`) and a labelling driver `prep/label_from_reference.py`.
+Reuses `semantic_store`, `scene_io` and the adapter contract; **not** the 2D
+front-end. This is contribution **C2** (§1.2).
+
+**Implemented (route (a)).** The driver rasterises labelled reference points into
+per-view composite maps (`rasterize_composite`: project + z-buffer nearest-surface
+wins + optional dilation) and writes `<DATASET_DIR>/semantic_reference/<stem>.npy`
++ `reference_meta.json` (taxonomy, instance source, consistency). The adapter
+consumes them unchanged; a held-out ALS class map can be scored via
+`--validate` (`confusion_summary`). Route (b) `assign_reference_labels_3d` assigns
+labels to 3D points directly (nearest surface within a tolerance; unmatched →
+void). Cores are numpy/cv2 and CPU-tested (`tests/test_tum2twin.py`); the
+`--label_adapter reference` path is exercised end-to-end there against a synthetic
+COLMAP scene.
 
 ---
 
@@ -189,6 +308,10 @@ A second guard drops samples within `mask_margin` px of a label boundary (`dt`,
 default 0): front-end silhouettes are a pixel or two generous, and those rim
 pixels are where background geometry slips through the depth test. Both are
 recorded in the bundle metadata (`n_occluded`, `n_masked`).
+
+> **Urban framing.** The benchmark supplies **GT depth** and reference geometry
+> (§2.3), so `occlusion=True` can be **validated** against reference depth rather
+> than assumed — a rare check unavailable in image-only datasets.
 
 Training used **both**: `render` for visibility, then `project` to find the
 pixel (`add_semantic_stats`, `:653-660`). The post-hoc pass should follow the
@@ -275,14 +398,37 @@ There are two scales of one idea:
 
 **Why:** deleting Gaussians whose centre is on an edge is what makes two objects
 visually merge or an object dissolve — the failure mode that ruins a scene as a
-simulation substrate. Interiors are redundant; edges are structural, and labels
-are noisiest there. So the band is where deletion is most damaging and most
+digital-twin LoD product (merged buildings, dissolved facades, lost thin
+structures). Interiors are redundant; edges are structural, and labels are
+noisiest there. So the band is where deletion is most damaging and most
 ambiguous — leave it alone.
 
 **DECIDED [D1] + [D11]:** absolute protect (`d_i < δ` ⇒ never a candidate), with
 **δ = 4 px** default (matches `--boundary_band 4`, the codebase's established
 band scale; with `dt_norm = 100` this is `d_i < 0.04`). Sweep {2, 4, 8} later.
 Record δ in the metadata.
+
+**DECIDED [D20] — urban band.** In the urban framing the band is the set of
+**class boundaries** between ALS/LoD classes (building/sky, building/vegetation,
+road/sidewalk, roof/facade, …) and is made **class-conditioned**: `δ` may differ
+per class pair, and a **geometry-edge term** lets `d_i` also count depth/normal
+discontinuities in the reference geometry, catching thin structures the class map
+misses (wires, railings, scaffolding, tree canopies). The **class-conditioned δ
+table is implemented**: `plan_pruning(band={class_id: δ})` (with `stride` /
+`class_of` recovering the class half of a composite `seg`) applies `δ_i` per
+Gaussian and records the table in the plan `meta`/`report`; the driver exposes
+`--band_class class:delta` (repeatable) or a JSON path, and `experiments/runs.py`
+passes it through. When unset the scalar `--band` (default 0.04) is used
+unchanged, so the single [D1] `δ = 4 px` remains the default and existing runs
+are bitwise unaffected. The **geometry-edge term is implemented**: from a
+per-view depth map (`LabelAdapter.load_depth`, TUM2TWIN GT or rendered depth) a
+depth-discontinuity mask + distance transform `dt_geom` gives a second boundary
+distance ([`semantic_utils.geometry_distance_transform`]); the vote combines it as
+`boundary_dist = min(d_class, d_geom) / dt_norm` **before** the operator (so
+`prune.py` is untouched), and a thin depth ridge therefore protects a Gaussian
+even where the class map is void. It is **opt-in** (`SemanticStore(edge_tol=…)` /
+`--edge_tol`, default off) and additive-safe: with no depth it is inert.
+Contributes to **C1**.
 
 ### 4.2 Hard-remove — [D5]
 
@@ -316,8 +462,8 @@ adds to the protect set: `target_i = (seg_i == s_target)`.
 
 - **Granularity: instance.** `s_target` is a **consistent instance id** (the
   bundle's `seg`) — one object; protect every Gaussian whose top-1 vote is that
-  instance. Class-level protection (all instances of a class) is a possible
-  extension, not the default.
+  instance. **Class-level protection** (all instances of a class) is a documented
+  extension — see [D21] below.
 - **Membership: blind.** `seg_i == s_target`, **no purity gate** — the band
   already guards the object's edges, so blind protection favours keeping the
   object whole over excluding a few mis-assigned floaters.
@@ -338,6 +484,14 @@ adds to the protect set: `target_i = (seg_i == s_target)`.
 - **Evaluation.** Add a **per-object** readout — PSNR on the instance's mask and
   its retained Gaussian count — since global/band means can hide a win for the
   object.
+
+**DECIDED [D21] — class-level protection (urban).** Mode (b) also accepts a
+**class** as the target (`s_target` ranges over a class id): protect every
+Gaussian of that class. This is the natural UDT control — "keep all
+buildings/facades intact while reducing ground and vegetation" — and maps
+directly onto semantic LoD (C6). Instance targeting remains the default; class
+targeting is an added mode, evaluated with a **per-class** readout alongside the
+per-object one.
 
 ---
 
@@ -438,21 +592,51 @@ budget (unreachable); above the ceiling, dead removal overshoots
 
 ## 6. Evaluation protocol
 
-- **Datasets:** `office_0/Sequence_1` (Replica GT class labels); later Mip-NeRF
-  360 `garden`/`bicycle` (SAM2 instances, fused maps for the vote).
-- **Models in:** trained PLYs from this repo; same `--eval` (llffhold=8) split
-  for all rows.
+- **Dataset: TUM2TWIN** (urban, §2.3). The benchmark is multimodal
+  (terrestrial/mobile/aerial images + LiDAR + LoD1/2/3 models + ALS semantics)
+  and **multitemporal**. Reference geometry supplies labels (§2.3) and, through
+  the LoD models, **geometric GT** for the task metrics below.
+- **Tiling [D22].** TUM2TWIN's ~100,000 m² far exceeds a single 24 GB GPU, so a
+  scene is processed as **tiles/subscenes** (BlockGaussian-style): prune per
+  tile, reassemble, report per-tile and aggregate. Tiling is fixed across arms.
+- **Models in:** trained PLYs from this repo (the base 3DGS trainer, **or** an
+  external urban method's PLY — the operator is training-free, §1). The same
+  `--eval` (llffhold=8) split is used for all rows.
 - **View set:** **train-only [D10]** — the vote pass sees only
-  `getTrainCameras()`, so no label or pruning decision leaks into a metric later
-  scored on the test split.
-- **Arms:** the control matrix above, at matched `keep_frac` ∈ {0.25, 0.5, 0.75};
-  n ≥ 3 (seed variance is real).
-- **Metrics:** `eval_sgdc.py` → global PSNR/SSIM/LPIPS, **band** and **interior**
-  PSNR, Gaussian count. Render cost read off the count.
+  `getTrainCameras()`, so no label or pruning decision leaks into the test split.
+- **Arms:** the §5.2 control matrix at matched `keep_frac` ∈ {0.25, 0.5, 0.75};
+  n ≥ 3 seeds (urban boundary metric variance is high — ISPRS 2025, §1.1).
+- **LOD-family artifact (C3).** `prune_model.py --export_family --budgets
+  0.25,0.5,0.75` runs load + §3 vote **once** and plans each budget on the shared
+  operator, writing one standalone model dir per budget
+  (`lod_<frac>/point_cloud/iteration_<n>/point_cloud.ply` + `cfg_args`) and a
+  deterministic `lod_manifest.json` (per budget: matched count, full
+  `PrunePlan.report()`, floor/ceiling reachability, kept-class histogram, δ
+  table). Each `lod_<frac>/` is a valid model dir scored by the same metric path
+  — no re-planning. `experiments.runs.build_lod_cmd` builds the command.
+- **Metrics [D23] — two tiers:**
+  - **Rendering (sanity, not headline):** `eval_worldsplat.py` → global
+    PSNR/SSIM/LPIPS, **band** and **interior** PSNR (band = §4.1 urban class
+    boundaries), Gaussian count, render cost.
+  - **UDT task-aligned (headline, C4), at matched budget:**
+    (i) **LoD-edge preservation** — distance error between the pruned asset's
+    implied edges and the LoD model edges;
+    (ii) **semantic-segmentation consistency** — IoU/mIoU of re-rendered labels
+    vs the reference classes;
+    (iii) **roof/solar-area error** — roof area implied by the pruned Gaussians
+    vs the LoD roof area;
+    (iv) **LoD3 reconstruction proxy** — facade/edge completeness.
+    These are the signals the domain actually consumes.
+- **Temporal consistency [D24] (C5).** On the multitemporal subsets, re-prune
+  after a temporal update and measure **kept-set / semantic-LoD stability** across
+  captures (per-budget Jaccard of kept classes). Reported separately.
+- **Baselines:** geometry-only (control), random, and ≥ 1 urban compression/LoD
+  method (a contribution/sensitivity pruner, or CityGaussian / Octree-GS where a
+  retraining baseline is runnable). Position as **retraining vs our
+  training-free** (§1.1, §8).
 - **Diagnostics:** Jaccard/TV between the semantic and geometry-only kept sets —
-  if the partition barely moves the *set*, the arm will be inert regardless of
-  score quality (the analogous pre-run diagnostic during training was
-  `sgdc/headroom`, removed — §9).
+  if the partition barely moves the *set*, the arm is inert regardless of score
+  quality (the old pre-run diagnostic `sgdc/headroom` is removed — §9).
 
 ---
 
@@ -480,15 +664,26 @@ budget (unreachable); above the ceiling, dead removal overshoots
 | D16 | **per-class fusion always** via `fuse_instances`; no SAM2 video propagation | §2.2 |
 | D17 | segmentation granularity: **per-object (instance), class-tagged** — composite `(class, instance)` map | §2.2 |
 | D18 | project/package name: **WorldSplat-Prune** (Python package `worldsplat_prune`, from `sgdc/`) | §9.1 |
+| D19 | **urban framing**: domain = UDTs (TUM2TWIN); primary label source = **reference geometry** (LoD/LiDAR/ALS), adapter `tum2twin`/`reference`; the 2D prompt-driven front-end becomes fallback/ablation | §1, §2.3 |
+| D20 | band = **urban class boundaries**, **class-conditioned δ** (table implemented), plus a reference **geometry-edge term** for thin structures (implemented; opt-in) | §4.1 |
+| D21 | target protection (mode b) gains **class-level** targeting (protect a whole class), for UDT semantic-LoD control | §4.3 |
+| D22 | evaluation runs on **tiled/subscene** units (TUM2TWIN is ~100,000 m²), fixed across arms | §6 |
+| D23 | headline metrics are **UDT task-aligned** (LoD-edge preservation, semantic-seg consistency, roof/solar-area, LoD3 proxy), not PSNR | §6 |
+| D24 | **temporal consistency** across multitemporal captures is a first-class, separately reported metric | §6 |
 
 ### 7.2 Open
 
-**None — structurally.** The pipeline is complete (D1–D18); the only remaining
-action is review and promotion (§9).
+**None — structurally.** The operator is complete (D1–D18) and the urban framing
+is settled (D19–D24); the only remaining action is review and promotion (§9).
 
-**Label-source front-end:** specified in §2.2 (prompt-driven Grounded-SAM-2, no
-taxonomy, auto-caption + curate phrases, always per-class fusion). It is a **new
-component to build**, not an unspecified gap.
+**Label-source front-end:** the **primary** route is the reference-geometry
+adapter (§2.3, [D19]) — LoD/LiDAR/ALS, new components `datasets/tum2twin.py` +
+`prep/label_from_reference.py`. The prompt-driven Grounded-SAM-2 front-end
+(§2.2) is retained as the **fallback/ablation**, not an unspecified gap.
+
+**Still to *calibrate* (measurements, not open design questions):** the
+class-conditioned `δ` table and the geometry-edge weight (§4.1), and the exact
+UDT task-metric implementations (§6). All are TUM2TWIN-specific measurements.
 
 ### 7.3 Future option (not in the current design)
 
@@ -510,19 +705,39 @@ component to build**, not an unspecified gap.
    fused maps when it matters.
 5. **Importance is heuristic** — a semantic win that does not beat
    geometry-only-global is not a semantic win.
-6. **No embodied-AI task metric yet** — band/interior PSNR and per-segment
-   coverage are proxies.
+6. **Task-metric fidelity (urban)** — the UDT task metrics themselves (§6) carry
+   assumptions (edge extraction, roof-area estimation, segmentation model);
+   validate each against the LoD/ALS reference before claiming a task win.
 7. **Mode (b) needs consistent instance ids** — a target instance is only
    meaningful on fused (cross-view) SAM2 ids, and *choosing* the target is a
    deferred step; on raw per-frame ids the top-1 vote scatters and targeting
    breaks.
-8. **Front-end coverage is things-only** — GroundingDINO detects objects, not
-   stuff, so walls/floor/sky stay void unless explicitly prompted (and are weak
-   there); expect sparse, stuff-poor labels from the chosen route (§2.2).
-9. **Front-end labeling can be wrong** — captioner phrases may be hallucinated
+8. **2D front-end coverage is things-only** — GroundingDINO detects objects, not
+   stuff, so walls/floor/sky stay void. Under the urban framing this is
+   **mitigated by the reference-geometry route** (§2.3), which labels stuff
+   directly; it affects only the 2D fallback/ablation arm.
+9. **2D front-end labeling can be wrong** — captioner phrases may be hallucinated
    and per-class fusion leans on COLMAP point coverage (sparse objects → dropped
-   to void); **curate phrases and validate classes against Replica GT** before
-   trusting any pruning result.
+   to void). Keep **curate phrases + validate classes** for the fallback arm; the
+   urban reference route sidesteps this but introduces its own alignment risk
+   (risk 10).
+10. **Reference-geometry alignment (urban, C2)** — projecting LoD/LiDAR onto
+    Gaussian centres errs where geometry is thin, occluded or unmapped; the
+    distance + normal-agreement tolerance is a knob. Validate class accuracy
+    against held-out ALS labels (§2.3).
+11. **Novelty vs in-training semantic density control** — we must **not** claim
+    "semantic pruning" as new. The moat has to be stated explicitly: **post-hoc /
+    training-free + reference-geometry labels + task-aligned eval** (§1.1). C1
+    without those reads as incremental.
+12. **Novelty vs urban LoD frameworks** (CityGaussian / Hier-3DGS / Octree-GS /
+    CLoD-GS / Urban-GS) — do **not** claim to beat them on NVS. Claim
+    *complementarity* (post-processing any pipeline's frozen asset) and *semantic
+    fidelity per budget*; include one as a baseline.
+13. **Scale / tiling** — TUM2TWIN is ~100,000 m²; pruning per tile can leave
+    seams. Report per-tile and aggregate; check seam continuity (§6, [D22]).
+14. **Boundary metric variance (urban)** — ISPRS 2025 documents high variance at
+    occluded urban boundaries; a single seed is not evidence. n ≥ 3 and report
+    spread (§6).
 
 ---
 
@@ -540,11 +755,14 @@ This branch becomes a **new project**. Two principles govern the end state:
 REMOVE) is applied, the ADD front-end is implemented (pure parts unit-tested),
 and the post-reconstruction pipeline is now implemented end to end: label lifting
 (§3, `worldsplat_prune/vote.py`) and the pruning operator (§4–5,
-`worldsplat_prune/prune.py` + the `prune_model.py` driver). Two items remain:
-the pruning-ablation manifest (`experiments/runs.py`, whose flags/entry point
-`prune_model.py` now defines) and the companion
-`docs/worldsplat_prune_report.md` (depends on results). See §9.3. Paths in the inventory below are written with the pre-migration `sgdc/...`
-names for reference.
+`worldsplat_prune/prune.py` + the `prune_model.py` driver). Under the **urban
+framing (D19–D24)** the prompt-driven front-end is **demoted to the
+fallback/ablation arm** (§2.2) and a new **reference-geometry adapter** (§2.3)
+becomes the primary label source. Three items remain: that adapter, the
+pruning-ablation manifest (`experiments/runs.py`, whose flags/entry point
+`prune_model.py` now defines), and the companion `docs/worldsplat_prune_report.md`
+(depends on results). See §9.3. Paths below use the pre-migration `sgdc/...` names
+for reference.
 
 ### 9.1 Code reuse & cleanup inventory
 
@@ -594,17 +812,24 @@ names for reference.
 > future per-segment option (§7.3) would need; only the error-budget logic is
 > dropped.
 
-**ADD — new components to build (the class front-end, §2.2):**
+**ADD — new components to build:**
 
-- a **GroundingDINO wrapper** (text phrase → boxes);
-- an **SAM2 box-prompted labeler** (extends `sgdc/segment_sam2.py`, which is
-  AMG-only today — same weights, box-prompt mode);
-- a **captioner → phrase-list tool** (small VLM or API, offline, de-duplicated);
-- a **per-class fusion driver** over the existing `sgdc/prep/fuse_instances.py`;
-- an **adapter** for the predicted composite `(class, instance)` maps (the
-  front-end's `L_v` consumer, alongside `sgdc/datasets/`).
+- **(2D fallback/ablation, §2.2)** a **GroundingDINO wrapper** (text phrase →
+  boxes); an **SAM2 box-prompted labeler** (extends `sgdc/segment_sam2.py`,
+  AMG-only today — same weights, box-prompt mode); a **captioner → phrase-list
+  tool** (small VLM or API, offline, de-duplicated); a **per-class fusion driver**
+  over `sgdc/prep/fuse_instances.py`; and an **adapter** for the predicted
+  composite `(class, instance)` maps.
+- **(urban, primary, §2.3, C2)** a **reference-geometry label adapter**
+  `datasets/tum2twin.py` (ids `tum2twin` / `reference`) consuming **LoD models,
+  LiDAR/ALS point clouds and ALS classes**, plus a labelling driver
+  `prep/label_from_reference.py`.
+- **(urban, C4)** the **UDT task metrics** (§6, [D23]): LoD-edge preservation,
+  semantic-segmentation consistency, roof/solar-area error, LoD3 proxy.
 
-These are additions, not part of the reuse/cleanup of existing code.
+These are additions, not part of the reuse/cleanup of existing code. The urban
+framing makes the reference-geometry adapter the **primary** label source (§2.3)
+and the 2D front-end the **fallback/ablation** (§2.2).
 
 **`tests/` and `scripts/` — follow their modules:**
 
@@ -626,8 +851,11 @@ time.
 - `docs/sgdc_report.md` → **replaced** by a companion
   `docs/worldsplat_prune_report.md`;
 - `docs/datasets.md` and `experiments/README.md` → **adapted** (registry, prep
-  and harness carry over; density-control sections removed);
-- `README.md` → top-level description and links updated.
+  and harness carry over; density-control sections removed). **Urban framing:
+  the registry must add `tum2twin`/TUM2TWIN and the reference-geometry adapter,
+  and re-role the Replica / Mip-NeRF 360 entries as fallback/ablation.**
+- `README.md` → top-level description and links updated to the **urban-LoD**
+  framing.
 
 **Applied so far.** The SGDC design docs (`sgdc_spec.md`, `sgdc_report.md`) are
 removed and `docs/worldsplat_prune_spec.md` is canonical; `docs/datasets.md`,
@@ -662,8 +890,14 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 | ADD: captioner → phrase-list tool | Done\* | `frontend/caption.py` (HF default, pluggable); pure helpers tested |
 | ADD: per-class fusion driver | Done | `prep/build_semantic_maps.py` + `fuse_instances_per_class` |
 | ADD: composite `(class, instance)` adapter | Done | `datasets/composite.py` (registered `composite`/`grounded_sam2`); tested (commit `fac2821`) |
+| ADD: reference-geometry adapter `datasets/tum2twin.py` + `prep/label_from_reference.py` (§2.3, [D19]) | Done\* | primary urban label source (LoD/LiDAR/ALS → `L_v`): adapter ids `tum2twin`/`reference`; driver route (a) rasterises reference points to composite maps (`rasterize_composite`), route (b) `assign_reference_labels_3d`; `confusion_summary` validation; CPU-tested end-to-end (`tests/test_tum2twin.py`) |
+| ADD: UDT task metrics — LoD-edge, semantic-seg, roof/solar, LoD3 (§6, [D23]) | Planned | headline urban eval beyond PSNR |
+| Framing: domain pivot to **urban LoD** (§1, §2.3, §6; D19–D24) | Done | objective, framing/contributions, label source, protocol and risks all updated in this document |
 | ADD: label lifting / class-vote pass (§3) | Done\* | `vote.py` (`VoteBundle`, `vote_classes_over_views`): render/project visibility, first/majority vote, depth occlusion + `mask_margin`; CPU-tested (`tests/test_vote.py`) |
 | ADD: pruning operator (§4–5) | Done\* | `prune.py` (`plan_pruning`, `PrunePlan`) + `prune_model.py` driver; pure gates/score/selection CPU-tested (`tests/test_prune.py`), the model path is unverified here |
+| ADD: class-conditioned δ ([D20], C1) | Done\* | `prune.py` `band={class_id: δ}` (+ `stride`/`class_of`, `parse_band_class`, `band_delta`, δ table in `meta`/`report`); driver `--band_class class:delta`/JSON; `experiments/runs.py` pass-through; CPU-tested (`tests/test_prune.py`, `tests/test_experiments.py`). Scalar default (0.04) unchanged; geometry-edge term still pending |
+| ADD: LOD-family export (§6, C3) | Done\* | `export_lod.py` (`export_lod_family`, `plan_lod_family`, `family_manifest`, `kept_class_histogram`); CLI `--export_family`/`--budgets` reuses the driver's `load_and_vote` + subset/save path; `experiments.runs.build_lod_cmd`; CPU-tested (`tests/test_export_lod.py`, `tests/test_experiments.py`) |
+| ADD: geometry-edge term ([D20], C1) | Done\* | `semantic_utils` `depth_edge_mask`/`geometry_distance_transform`/`distance_transform_from_mask`/`resize_depth`; `LabelAdapter.load_depth` hook; `SemanticStore(edge_tol=…)` returns `dt_geom`; `vote.py` combines `min(d_class, d_geom)` (meta `edge_term`/`n_edge_views`); driver `--edge_tol`. Opt-in, additive-safe; CPU-tested (`tests/test_semantic_utils.py`, `tests/test_vote.py`) |
 | `tests/`: KEEP / REMOVE | Done | kept trio; SGDC tests gone |
 | `tests/test_experiments.py` ADAPT | Done | retains the harness tests; prune-manifest tests added (grid, per-arm flags, matched budget) |
 | Doc migration: spec replaced | Done | this document is canonical |
@@ -675,10 +909,14 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 pruning paths; the full suite passes. The `Done\*` model paths are written
 defensively but not exercised against model weights.
 
-**Next work:** run the `PRUNE_RUNS` grid (arms × budgets × seeds) on the trained
-base model, collect rows via `extract_prune_all`, and write
-`docs/worldsplat_prune_report.md`. The label lifting (§3, `vote.py`), the
-operator (§4–5, `prune.py`), the driver (`prune_model.py`) and the ablation
-manifest (`experiments/runs.py`) are implemented; the pure paths are CPU-tested
-(`tests/test_vote.py`, `tests/test_prune.py`) and the CUDA `render` path is
-exercised only against a GPU rasteriser.
+**Next work:** build the **UDT task metrics** (§6, [D23]); then run the
+`PRUNE_RUNS` grid (arms × budgets × seeds) on a trained **TUM2TWIN tile**, collect
+rows via `extract_prune_all`, and write `docs/worldsplat_prune_report.md`. The
+reference-geometry adapter (§2.3, `datasets/tum2twin.py` +
+`prep/label_from_reference.py`), label lifting (§3, `vote.py`), the operator
+(§4–5, `prune.py`), the driver (`prune_model.py`), the LOD-family export
+(`export_lod.py`, C3) and the ablation manifest (`experiments/runs.py`) are
+implemented; the pure paths are CPU-tested (`tests/test_tum2twin.py`,
+`tests/test_vote.py`, `tests/test_prune.py`, `tests/test_export_lod.py`,
+`tests/test_semantic_utils.py`) and the CUDA `render` path is exercised only
+against a GPU rasteriser.
