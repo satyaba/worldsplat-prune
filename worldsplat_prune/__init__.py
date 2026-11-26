@@ -19,4 +19,5 @@ __all__ = [
     "verify_alignment",
     "eval_boundary",
     "vote",
+    "prune",
 ]

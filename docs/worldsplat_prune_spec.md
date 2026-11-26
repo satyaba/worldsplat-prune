@@ -537,11 +537,13 @@ This branch becomes a **new project**. Two principles govern the end state:
    density-control code should remain that the new goal does not use.
 
 **Status: IN PROGRESS (branch `main`).** The code-side inventory (KEEP / ADAPT /
-REMOVE) is applied, and the ADD front-end is implemented (pure parts
-unit-tested). Two items remain **blocked, not started**: the pruning-ablation
-manifest (`experiments/runs.py`, depends on the §4–5 operator) and the companion
-`docs/worldsplat_prune_report.md` (depends on results). See the per-item table in
-§9.3. Paths in the inventory below are written with the pre-migration `sgdc/...`
+REMOVE) is applied, the ADD front-end is implemented (pure parts unit-tested),
+and the post-reconstruction pipeline is now implemented end to end: label lifting
+(§3, `worldsplat_prune/vote.py`) and the pruning operator (§4–5,
+`worldsplat_prune/prune.py` + the `prune_model.py` driver). Two items remain:
+the pruning-ablation manifest (`experiments/runs.py`, whose flags/entry point
+`prune_model.py` now defines) and the companion
+`docs/worldsplat_prune_report.md` (depends on results). See §9.3. Paths in the inventory below are written with the pre-migration `sgdc/...`
 names for reference.
 
 ### 9.1 Code reuse & cleanup inventory
@@ -650,8 +652,8 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 | ADAPT: `fuse_instances` per-class mode | Done | `fuse_instances_per_class()` (commit `fac2821`); tested |
 | ADAPT: `eval_instances` retarget | Done | composite-aware lifting + `--level {composite,class,instance}` + `--class_gt` validation (commit `fa094ad`); tested |
 | ADAPT: `budget.py` keep `allocate()`, drop error-budget logic | Done | trimmed to the allocator only |
-| ADAPT: `experiments/` retarget to pruning ablations | Blocked | harness/runner/metrics retained; the pruning arms need the operator |
-| ADAPT: `experiments/runs.py` → pruning-ablation manifest | Blocked | deferred by decision; flags/entry point undefined until §4–5 lands |
+| ADAPT: `experiments/` retarget to pruning ablations | Partial | harness/runner/metrics retained; the operator now exists (`prune.py` + `prune_model.py`), the ablation manifest is next |
+| ADAPT: `experiments/runs.py` → pruning-ablation manifest | Partial | flags/entry point defined by `prune_model.py`; manifest still to write |
 | ADAPT: `train.py`, `scene/gaussian_model.py`, `arguments/` de-SGDC | Done | no SGDC hooks/flags remain |
 | ADAPT: notebooks retargeted | Done | repo URL/dir/branch + text updated (commit `79388cb`) |
 | REMOVE: `budget_probe.py`, `headroom.py`, SGDC training components, CLI flags, run specs, SGDC docs | Done | removed (pre-existing + commit `79388cb`) |
@@ -660,19 +662,22 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 | ADD: captioner → phrase-list tool | Done\* | `frontend/caption.py` (HF default, pluggable); pure helpers tested |
 | ADD: per-class fusion driver | Done | `prep/build_semantic_maps.py` + `fuse_instances_per_class` |
 | ADD: composite `(class, instance)` adapter | Done | `datasets/composite.py` (registered `composite`/`grounded_sam2`); tested (commit `fac2821`) |
+| ADD: label lifting / class-vote pass (§3) | Done\* | `vote.py` (`VoteBundle`, `vote_classes_over_views`): render/project visibility, first/majority vote, depth occlusion + `mask_margin`; CPU-tested (`tests/test_vote.py`) |
+| ADD: pruning operator (§4–5) | Done\* | `prune.py` (`plan_pruning`, `PrunePlan`) + `prune_model.py` driver; pure gates/score/selection CPU-tested (`tests/test_prune.py`), the model path is unverified here |
 | `tests/`: KEEP / REMOVE | Done | kept trio; SGDC tests gone |
 | `tests/test_experiments.py` ADAPT | Partial | SGDC example flags swapped; pruning-harness retarget is **Blocked** |
 | Doc migration: spec replaced | Done | this document is canonical |
 | Doc migration: `docs/worldsplat_prune_report.md` | Blocked | pending results |
 
-**Test coverage:** `tests/test_composite.py` (new) and the extended
-`tests/test_frontend.py` / `tests/test_eval_instances.py` cover the pure
-composition, encoding and evaluation paths; the full suite passes. The `Done\*`
-model paths are written defensively but not exercised against model weights.
+**Test coverage:** `tests/test_composite.py`, `tests/test_vote.py` and
+`tests/test_prune.py` (new) plus the extended `tests/test_frontend.py` /
+`tests/test_eval_instances.py` cover the pure composition, encoding, lifting and
+pruning paths; the full suite passes. The `Done\*` model paths are written
+defensively but not exercised against model weights.
 
-**Not covered by §9** (next work): the post-reconstruction pruning operator itself
-(§4–5), which unblocks the pruning-ablation manifest and the report. The label
-lifting that feeds it — the `vote_classes_over_views` pass (§3) — is now
-implemented in `worldsplat_prune/vote.py` (`VoteBundle`, `vote_classes_over_views`),
-CPU-tested in `tests/test_vote.py`; the CUDA `render` membership path is wired but
-exercised only against a GPU rasteriser.
+**Next work:** the pruning-ablation manifest (`experiments/runs.py`) over the
+flags `prune_model.py` now exposes (arms over `strength`, `band`, `use_band`/
+`use_purity`, `allocation`, `random`), then the results and
+`docs/worldsplat_prune_report.md`. The label lifting (§3, `vote.py`) and the
+operator (§4–5, `prune.py`) that feed it are implemented and CPU-tested; the CUDA
+`render` path is wired but exercised only against a GPU rasteriser.
