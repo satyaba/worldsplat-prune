@@ -652,8 +652,8 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 | ADAPT: `fuse_instances` per-class mode | Done | `fuse_instances_per_class()` (commit `fac2821`); tested |
 | ADAPT: `eval_instances` retarget | Done | composite-aware lifting + `--level {composite,class,instance}` + `--class_gt` validation (commit `fa094ad`); tested |
 | ADAPT: `budget.py` keep `allocate()`, drop error-budget logic | Done | trimmed to the allocator only |
-| ADAPT: `experiments/` retarget to pruning ablations | Partial | harness/runner/metrics retained; the operator now exists (`prune.py` + `prune_model.py`), the ablation manifest is next |
-| ADAPT: `experiments/runs.py` → pruning-ablation manifest | Partial | flags/entry point defined by `prune_model.py`; manifest still to write |
+| ADAPT: `experiments/` retarget to pruning ablations | Done | harness/runner/metrics retained; `PRUNE_RUNS` grid + `run_prune*`/`extract_prune*` added |
+| ADAPT: `experiments/runs.py` → pruning-ablation manifest | Done | `PRUNE_RUNS` over the control-matrix arms (semantic/geometry/random + noband/seg ablations), CLI `--list-prune/--prune/--all-prune` |
 | ADAPT: `train.py`, `scene/gaussian_model.py`, `arguments/` de-SGDC | Done | no SGDC hooks/flags remain |
 | ADAPT: notebooks retargeted | Done | repo URL/dir/branch + text updated (commit `79388cb`) |
 | REMOVE: `budget_probe.py`, `headroom.py`, SGDC training components, CLI flags, run specs, SGDC docs | Done | removed (pre-existing + commit `79388cb`) |
@@ -665,7 +665,7 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 | ADD: label lifting / class-vote pass (§3) | Done\* | `vote.py` (`VoteBundle`, `vote_classes_over_views`): render/project visibility, first/majority vote, depth occlusion + `mask_margin`; CPU-tested (`tests/test_vote.py`) |
 | ADD: pruning operator (§4–5) | Done\* | `prune.py` (`plan_pruning`, `PrunePlan`) + `prune_model.py` driver; pure gates/score/selection CPU-tested (`tests/test_prune.py`), the model path is unverified here |
 | `tests/`: KEEP / REMOVE | Done | kept trio; SGDC tests gone |
-| `tests/test_experiments.py` ADAPT | Partial | SGDC example flags swapped; pruning-harness retarget is **Blocked** |
+| `tests/test_experiments.py` ADAPT | Done | retains the harness tests; prune-manifest tests added (grid, per-arm flags, matched budget) |
 | Doc migration: spec replaced | Done | this document is canonical |
 | Doc migration: `docs/worldsplat_prune_report.md` | Blocked | pending results |
 
@@ -675,9 +675,10 @@ on the §4–5 pruning operator), **N/A** (already satisfied).
 pruning paths; the full suite passes. The `Done\*` model paths are written
 defensively but not exercised against model weights.
 
-**Next work:** the pruning-ablation manifest (`experiments/runs.py`) over the
-flags `prune_model.py` now exposes (arms over `strength`, `band`, `use_band`/
-`use_purity`, `allocation`, `random`), then the results and
-`docs/worldsplat_prune_report.md`. The label lifting (§3, `vote.py`) and the
-operator (§4–5, `prune.py`) that feed it are implemented and CPU-tested; the CUDA
-`render` path is wired but exercised only against a GPU rasteriser.
+**Next work:** run the `PRUNE_RUNS` grid (arms × budgets × seeds) on the trained
+base model, collect rows via `extract_prune_all`, and write
+`docs/worldsplat_prune_report.md`. The label lifting (§3, `vote.py`), the
+operator (§4–5, `prune.py`), the driver (`prune_model.py`) and the ablation
+manifest (`experiments/runs.py`) are implemented; the pure paths are CPU-tested
+(`tests/test_vote.py`, `tests/test_prune.py`) and the CUDA `render` path is
+exercised only against a GPU rasteriser.

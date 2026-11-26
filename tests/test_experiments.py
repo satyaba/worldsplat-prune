@@ -119,6 +119,67 @@ def test_to_row_missing_band_metrics_stay_none():
     assert row["Test PSNR interior"] is None
 
 
+# --------------------------------------------------------------------------- #
+# pruning-ablation manifest (§4-5)                                              #
+# --------------------------------------------------------------------------- #
+def _arm_spec(arm):
+    for s in runs.PRUNE_RUNS.values():
+        if s.arm == arm:
+            return s
+    raise AssertionError(f"no spec for arm {arm!r}")
+
+
+def test_prune_manifest_well_formed():
+    assert runs.PRUNE_RUNS, "prune manifest is empty"
+    ids = [s.run_id for s in runs.PRUNE_RUNS.values()]
+    assert len(ids) == len(set(ids))
+    for rid, s in runs.PRUNE_RUNS.items():
+        assert rid == s.run_id
+        assert s.arm in runs.PRUNE_ARMS
+        assert 0.0 < s.keep_frac <= 1.0
+        assert 0.0 <= s.strength <= 1.0
+        assert s.base
+
+
+def test_prune_cmd_flags_per_arm():
+    base, out = "/b", "/o"
+    geom = runs.build_prune_cmd(_arm_spec("geometry"), base, out)
+    assert "--no_band" in geom and "--no_purity" in geom
+    assert "--random" in runs.build_prune_cmd(_arm_spec("random"), base, out)
+    assert "--no_band" in runs.build_prune_cmd(_arm_spec("noband"), base, out)
+    seg = runs.build_prune_cmd(_arm_spec("seg"), base, out)
+    assert seg[seg.index("--allocation") + 1] == "per_segment"
+    assert "--no_band" not in runs.build_prune_cmd(_arm_spec("semantic"), base, out)
+
+
+def test_prune_cmd_shape_and_matched_budget():
+    s = _arm_spec("semantic")
+    cmd = runs.build_prune_cmd(s, "/base", "/out")
+    assert cmd[1] == "prune_model.py"
+    assert cmd[cmd.index("-m") + 1] == "/base"
+    assert cmd[cmd.index("--out_dir") + 1] == "/out"
+    assert cmd[cmd.index("--keep_frac") + 1] == str(s.keep_frac)
+    # matched budget: every arm at the same (keep_frac, seed) keeps the same count
+    assert len({s.keep_frac for s in runs.PRUNE_RUNS.values()}) == len(runs.PRUNE_KEEP_FRACS)
+
+
+def test_prune_arms_cover_control_matrix():
+    # the grid must contain the candidate, the control and the structure bar
+    arms = {s.arm for s in runs.PRUNE_RUNS.values()}
+    assert {"semantic", "geometry", "random"} <= arms
+    # matched: for each keep_frac there is at least one of each core arm
+    for kf in runs.PRUNE_KEEP_FRACS:
+        for arm in ("semantic", "geometry", "random"):
+            assert any(s.keep_frac == kf and s.arm == arm
+                       for s in runs.PRUNE_RUNS.values())
+
+
+def test_run_prune_dry():
+    s = next(iter(runs.PRUNE_RUNS.values()))
+    out = runs.run_prune(s, home_dir="/h", dry=True)
+    assert str(out).replace("\\", "/").endswith(s.run_id)
+
+
 if __name__ == "__main__":
     import traceback
 

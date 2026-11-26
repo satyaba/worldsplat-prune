@@ -40,8 +40,8 @@ python -m experiments.runs --run base_30k     # one run
 python -m experiments.runs --all              # every non-sanity run
 ```
 
-Runs currently declared (training baselines; the pruning-method ablation manifest
-is added separately):
+Runs currently declared (training baselines; the pruning-method ablation grid is
+in the separate `PRUNE_RUNS` manifest below):
 
 | run id | method | iters | notes |
 |---|---|---|---|
@@ -57,6 +57,53 @@ them to verify the whole pipeline before committing to 30 000 iters. `--all` and
 
 Add a run by appending a `RunSpec` to `RUNS`. All runs share the `--eval`
 (llffhold=8) train/test split, so rows are comparable across methods.
+
+### The pruning-ablation manifest (§4–5)
+
+Post-reconstruction pruning has its own grid (`PRUNE_RUNS`): each spec prunes a
+**trained base model** (`<home>/output/<base>`, default `base_30k`) and is scored
+through the same metric path. The arms are the §5.2 control matrix.
+
+```bash
+python -m experiments.runs --list-prune        # show the grid
+python -m experiments.runs --prune p_base_30k_semantic_k0.5_s0.5_0
+python -m experiments.runs --all-prune
+```
+
+| arm | `prune_model.py` flags | role |
+|---|---|---|
+| `semantic` | _(defaults)_ | candidate: band protect + purity confidence |
+| `geometry` | `--no_band --no_purity` | control: geometry-only score, no band |
+| `random` | `--random` | structure bar (random allocation, band off) |
+| `noband` | `--no_band` | ablation: confidence, no band protect |
+| `seg` | `--allocation per_segment` | ablation (§7.3) |
+
+Default grid: 3 arms × `keep_frac ∈ {0.25, 0.5, 0.75}` × seeds `{0, 1, 2}`, plus
+a `strength` sweep of the candidate and the two ablations. Every arm at a given
+`(keep_frac, seed)` keeps the **same Gaussian count**, so rows are matched.
+Regenerate a narrower grid with
+`prune_specs(keep_fracs=..., strengths=..., seeds=...)`.
+
+From a notebook:
+
+```python
+import os
+from experiments.runs import run_prune_all, extract_prune_all
+
+os.environ["HOME_DIR"] = "/content/drive/MyDrive/Magister/Thesis/Script"
+run_prune_all()                                   # writes <home>/output/p_...
+extract_prune_all(csv_path=os.environ["HOME_DIR"] +
+                  "/output/prune_metrics.csv")     # one CSV row per arm
+```
+
+Score a one-off arm without the manifest:
+
+```bash
+python prune_model.py -m "$HOME_DIR/output/base_30k" --label_adapter composite \
+    --keep_frac 0.5 --out_dir "$HOME_DIR/output/my_arm"
+python -m experiments.metrics --model-dir "$HOME_DIR/output/my_arm" \
+    --label-adapter composite
+```
 
 ### Running one method directly
 
